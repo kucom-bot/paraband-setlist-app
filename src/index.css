@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ตั้งค่าพื้นฐานสำหรับแอปสีเข้ม (Stage Mode พร้อมใช้) */
+body {
+  @apply bg-gray-900 text-white m-0 p-0 font-sans;
+}
