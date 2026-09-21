@@ -6,7 +6,7 @@ import {
   Type, FileText, Save, PlusCircle, MinusCircle, Sparkles, Clock, Tag, Settings,
   X, Edit2, Link, RotateCcw, Eye, EyeOff, Zap, Activity,
   Folder, FolderPlus, Download, AlertCircle,
-  Table, CheckSquare, ArrowUpFromLine, LogIn, LogOut, User,
+  Table, CheckSquare, ArrowUpFromLine, LogIn, LogOut, User, Menu,
   Repeat, Scissors, BookOpen, Printer, ChevronDown, Wrench
 } from 'lucide-react';
 import { db } from './firebase';
@@ -1164,6 +1164,7 @@ function App() {
   const [activePlaylistId, setActivePlaylistId] = useState(null);
   const [showPlaylistForm, setShowPlaylistForm] = useState(false);
   const [editingPlaylist, setEditingPlaylist] = useState(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // --- Songs ---
   const [songs, setSongs] = useState([]);
@@ -1688,15 +1689,22 @@ function App() {
   // Setlist Screen
   // ==========================================
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex">
-      {/* Sidebar */}
-      <aside className="w-60 flex-shrink-0 bg-gray-950 border-r border-gray-800 flex flex-col min-h-screen">
+    <div className="h-screen bg-gray-900 text-white flex overflow-hidden relative">
+      
+      {/* ฉากหลังสีดำตอนสไลด์เมนูออกมา (เฉพาะบนมือถือ) */}
+      {isSidebarOpen && (
+        <div className="fixed inset-0 bg-black/60 z-30 md:hidden" onClick={() => setIsSidebarOpen(false)} />
+      )}
+
+      {/* Sidebar (เมนูซ้ายมือ) */}
+      <aside className={`fixed inset-y-0 left-0 z-40 w-60 bg-gray-950 border-r border-gray-800 flex flex-col h-full transition-transform duration-300 ease-in-out md:relative md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="p-4 border-b border-gray-800">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <Music size={18} className="text-blue-400" />
               <span className="font-bold text-white text-sm">BandSetlist</span>
             </div>
+            {/* Auth button */}
             {user ? (
               <div className="flex items-center gap-1">
                 <span className="text-xs text-gray-400 truncate max-w-16">{user.displayName || user.email?.split('@')[0]}</span>
@@ -1720,7 +1728,8 @@ function App() {
             const isActive = activePlaylistId === pl.id;
             return (
               <div key={pl.id}
-                onClick={() => setActivePlaylistId(pl.id)}
+                // เมื่อกดเลือก Playlist บนมือถือ ให้ลิ้นชักหุบเก็บอัตโนมัติ
+                onClick={() => { setActivePlaylistId(pl.id); setIsSidebarOpen(false); }}
                 className={`group flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition ${isActive ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'}`}
                 style={isActive ? { borderLeft: `3px solid ${pl.color}` } : {}}>
                 <span className="text-lg flex-shrink-0">{pl.icon}</span>
@@ -1739,7 +1748,7 @@ function App() {
           })}
         </nav>
 
-        <div className="p-3 border-t border-gray-800 space-y-1">
+        <div className="p-3 border-t border-gray-800 space-y-1 flex-shrink-0">
           <button onClick={() => setShowImport(true)} className="w-full flex items-center gap-2 px-3 py-2 text-gray-400 hover:bg-gray-800 hover:text-green-400 rounded-lg text-sm transition">
             <ArrowUpFromLine size={14} /> Import Excel/CSV
           </button>
@@ -1749,16 +1758,23 @@ function App() {
           <button onClick={() => setShowSettings(true)} className="w-full flex items-center gap-2 px-3 py-2 text-gray-400 hover:bg-gray-800 rounded-lg text-sm transition">
             <Settings size={14} /> ตั้งค่าธีม
           </button>
-          {/* ✅ FIX 4: ปุ่ม Migration — รันครั้งเดียวแล้วลบบล็อกนี้ทิ้งได้ */}
-          <button onClick={runOrderMigration} disabled={isMigrating}
-            className="w-full flex items-center gap-2 px-3 py-2 text-gray-600 hover:bg-gray-800 hover:text-orange-400 rounded-lg text-xs transition disabled:opacity-50">
-            <Wrench size={13} /> {isMigrating ? 'กำลังรัน...' : 'Run Migration (ครั้งเดียว)'}
-          </button>
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="flex-1 min-w-0 p-5 md:p-8">
+      {/* Main (พื้นที่แสดงรายชื่อเพลง) */}
+      <main className="flex-1 min-w-0 h-full overflow-y-auto p-4 md:p-8">
+        
+        {/* แถบเมนูด้านบนที่มีปุ่ม Hamburger (เห็นเฉพาะบนจอมือถือ) */}
+        <div className="md:hidden flex items-center gap-3 mb-4 pb-3 border-b border-gray-800">
+          <button onClick={() => setIsSidebarOpen(true)} className="p-1 text-gray-400 hover:text-white">
+            <Menu size={26} />
+          </button>
+          <div className="flex items-center gap-2">
+            <Music size={18} className="text-blue-400" />
+            <span className="font-bold text-white text-base">BandSetlist</span>
+          </div>
+        </div>
+
         {!activePlaylistId ? (
           <div className="flex flex-col items-center justify-center h-full text-gray-600 gap-4 py-20">
             <Folder size={64} className="opacity-30" />
@@ -1797,7 +1813,7 @@ function App() {
             {allTags.length > 0 && (
               <div className="flex gap-2 flex-wrap mb-4">
                 <button onClick={() => setFilterTag('')} className={`text-xs px-3 py-1 rounded-full border transition ${!filterTag ? 'bg-blue-700 border-blue-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'}`}>ทั้งหมด</button>
-                {allTags.map(t => { const c = getTagColor(t); return <button key={t} onClick={() => setFilterTag(filterTag === t ? '' : t)} className={`text-xs px-3 py-1 rounded-full border transition ${filterTag === t ? `${c.bg} ${c.border} ${c.text}` : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'}`}>#{t}</button>; })}
+                {allTags.map(t => { const c = getTagColor(t); return <button key={t} onClick={() => setFilterTag(filterTag === t ? '' : t)} className={`text-xs px-3 py-1 rounded-full border transition ${filterTag === t ? `${c.bg} ${c.border}${c.text}` : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'}`}>#{t}</button>; })}
               </div>
             )}
 
@@ -1816,7 +1832,7 @@ function App() {
               <DragDropContext onDragEnd={handleOnDragEnd}>
                 <Droppable droppableId="setlist">
                   {(provided) => (
-                    <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-2">
+                    <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-2 pb-20">
                       {filteredSongs.map((song, index) => (
                         <Draggable draggableId={song.id} index={index} key={song.id}>
                           {(provided, snapshot) => (
@@ -1859,7 +1875,7 @@ function App() {
         )}
       </main>
 
-      {/* Modals */}
+      {/* Modals ที่รอการเปิดใช้งาน */}
       {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
       {showPlaylistForm && <PlaylistFormModal playlist={editingPlaylist} onClose={() => { setShowPlaylistForm(false); setEditingPlaylist(null); }} onSave={data => editingPlaylist ? handleUpdatePlaylist(editingPlaylist.id, data) : handleCreatePlaylist(data)} />}
       {showAddSong && <AddSongModal onClose={() => setShowAddSong(false)} onSave={handleAddSong} allSongs={songs} />}
