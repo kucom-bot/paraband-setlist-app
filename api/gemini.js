@@ -1,25 +1,24 @@
 // ไฟล์: api/gemini.js
 export default async function handler(req, res) {
-  // รับเฉพาะ HTTP POST เท่านั้น
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'Method Not Allowed' });
   }
 
   try {
-    // 1. รับข้อมูลรูปภาพจากหน้าเว็บเรา
     const { base64Data, mimeType } = req.body;
-    if (!base64Data || !mimeType) {
-      return res.status(400).json({ success: false, message: 'Missing image data' });
-    }
+    if (!base64Data || !mimeType) return res.status(400).json({ success: false, message: 'Missing image data' });
 
-    // 2. ดึง API Key จากที่ซ่อนไว้ (Vercel จะรู้จัก process.env อัตโนมัติ)
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ success: false, message: 'API Key not configured on server' });
-    }
+    // 1. ดึงคีย์ทั้งหมดที่คั่นด้วยลูกน้ำมาจาก Vercel
+    const keysString = process.env.GEMINI_API_KEYS;
+    if (!keysString) return res.status(500).json({ success: false, message: 'API Keys not configured' });
 
-    // 3. ยิง API ไปหา Gemini จากหลังบ้าน
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
+    // 2. หั่นลูกน้ำแยกเป็นกล่องๆ (Array)
+    const keysArray = keysString.split(',');
+    
+    // 3. สุ่มเลือกคีย์มา 1 อันเพื่อใช้งานในรอบนี้ (ไม้ตายลดอัตราการติด Limit)
+    const randomKey = keysArray[Math.floor(Math.random() * keysArray.length)].trim();
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-3.6-flash:generateContent?key=${randomKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -35,7 +34,6 @@ export default async function handler(req, res) {
     const data = await response.json();
     if (data.error) throw new Error(data.error.message);
 
-    // 4. ส่งข้อความที่แปลงเสร็จกลับไปให้หน้าเว็บเรา
     let extractedText = data.candidates[0].content.parts[0].text;
     res.status(200).json({ success: true, text: extractedText });
 
