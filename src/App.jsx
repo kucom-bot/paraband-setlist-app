@@ -1363,7 +1363,7 @@ function App() {
                       <span className="text-gray-500 text-[10px] md:text-xs uppercase tracking-wider font-semibold hidden md:inline flex-shrink-0">
                         Next:
                       </span>
-                      <span className="text-2xl md:text-3xl font-bold truncate opacity-40" style={{ color: theme.chordColor }}>
+                      <span className="text-2xl md:text-3xl font-bold truncate opacity-30" style={{ color: theme.chordColor }}>
                         {nextSong.title}
                       </span>
                       {nextSong.key && (
