@@ -1115,23 +1115,37 @@ function App() {
   const handleDuplicatePlaylist = async (playlistToCopy) => {
     if (!window.confirm(`ต้องการทำสำเนา Playlist "${playlistToCopy.name}" และเพลงทั้งหมดข้างใน ใช่หรือไม่?`)) return;
     try {
+      // 1. แยก id เก่าทิ้งไป เอาเฉพาะข้อมูลที่เหลือมาใช้ (ป้องกัน Error undefined)
+      const { id, ...playlistData } = playlistToCopy;
+      
+      // 2. สร้าง Playlist ใหม่
       const newPlaylistRef = await addDoc(collection(db, 'playlists'), {
-        ...playlistToCopy,
-        id: undefined,
-        name: `${playlistToCopy.name} (สำเนา)`,
+        ...playlistData,
+        name: `${playlistData.name} (สำเนา)`,
         order: playlists.length,
         createdAt: serverTimestamp()
       });
+
+      // 3. ดึงเพลงทั้งหมดจาก Playlist เดิม
       const q = query(collection(db, 'songs'), where('playlistId', '==', playlistToCopy.id));
       const snapshot = await getDocs(q);
+      
+      // 4. ก๊อปปี้เพลงไปใส่ Playlist ใหม่พร้อมๆ กัน
       const batch = writeBatch(db);
       snapshot.forEach((docSnap) => {
         const newSongRef = doc(collection(db, 'songs'));
-        batch.set(newSongRef, { ...docSnap.data(), playlistId: newPlaylistRef.id, createdAt: serverTimestamp() });
+        batch.set(newSongRef, { 
+          ...docSnap.data(), 
+          playlistId: newPlaylistRef.id, 
+          createdAt: serverTimestamp() 
+        });
       });
       await batch.commit();
+      
       alert(`ทำสำเนาเรียบร้อย! (${snapshot.size} เพลง)`);
-    } catch (error) { alert("Error: " + error.message); }
+    } catch (error) { 
+      alert("Error: " + error.message); 
+    }
   };
 
   const handleCopySongToPlaylist = async (song, targetPlaylistId) => {
@@ -1336,15 +1350,30 @@ function App() {
               const currentIndex = filteredSongs.findIndex(s => s.id === selectedSong.id);
               const nextSong = currentIndex >= 0 && currentIndex < filteredSongs.length - 1 ? filteredSongs[currentIndex + 1] : null;
               return (
-                <div className="flex flex-col md:flex-row md:items-baseline md:gap-4 mb-1">
-                  <h2 className="text-2xl md:text-3xl font-bold tracking-wide truncate" style={{ color: theme.chordColor }}>{selectedSong.title}</h2>
+                <div className="flex w-full justify-between items-baseline gap-4 mb-1">
+                  
+                  {/* ชื่อเพลงปัจจุบัน (ชิดซ้าย) */}
+                  <h2 className="text-2xl md:text-3xl font-bold tracking-wide truncate" style={{ color: theme.chordColor }}>
+                    {selectedSong.title}
+                  </h2>
+                  
+                  {/* ชื่อเพลงถัดไป (ชิดขวา, ขนาดเท่ากัน, สีตามธีมแต่จางลง) */}
                   {nextSong && (
-                    <div className="flex items-center gap-2 mt-0.5 md:mt-0">
-                      <span className="text-gray-600 text-[10px] uppercase tracking-wider font-semibold">Next:</span>
-                      <span className="text-gray-500 font-medium text-sm truncate max-w-40">{nextSong.title}</span>
-                      {nextSong.key && <span className="text-[10px] bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded font-mono flex-shrink-0">{nextSong.key}</span>}
+                    <div className="flex items-baseline gap-2 min-w-0 text-right">
+                      <span className="text-gray-500 text-[10px] md:text-xs uppercase tracking-wider font-semibold hidden md:inline flex-shrink-0">
+                        Next:
+                      </span>
+                      <span className="text-2xl md:text-3xl font-bold truncate opacity-40" style={{ color: theme.chordColor }}>
+                        {nextSong.title}
+                      </span>
+                      {nextSong.key && (
+                        <span className="text-[10px] md:text-xs bg-gray-800/50 px-1.5 py-0.5 rounded font-mono opacity-50 flex-shrink-0" style={{ color: theme.chordColor }}>
+                          {nextSong.key}
+                        </span>
+                      )}
                     </div>
                   )}
+                  
                 </div>
               );
             })()}
