@@ -6,25 +6,19 @@ import {
   Type, FileText, Save, PlusCircle, MinusCircle, Sparkles, Clock, Tag, Settings,
   X, Edit2, Link, RotateCcw, Eye, EyeOff, Zap, Activity,
   Folder, FolderPlus, Download, AlertCircle,
-  Table, CheckSquare, ArrowUpFromLine, LogIn, LogOut, User, Menu,
-  Repeat, Scissors, BookOpen, Printer, ChevronDown, Wrench
+  Table, CheckSquare, ArrowUpFromLine, LogIn, LogOut, User,
+  Repeat, Scissors, BookOpen, Printer, ChevronDown, Copy
 } from 'lucide-react';
 import { db } from './firebase';
 import {
   collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy,
-  setDoc, deleteDoc, writeBatch, where, getDoc, getDocs
+  setDoc, deleteDoc, writeBatch, where, getDoc, getDocs, serverTimestamp
 } from 'firebase/firestore';
 import {
   getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   signOut, onAuthStateChanged, updateProfile
 } from 'firebase/auth';
-import * as XLSX from 'xlsx';                       // ✅ FIX 1: ใช้ npm แทน CDN
-
-// ==========================================
-// ✅ FIX 5: Gemini model config
-// ==========================================
-const GEMINI_MODEL = 'gemini-3.6-flash';
-const GEMINI_API_VERSION = 'v1beta';
+import * as XLSX from 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm';
 
 // ==========================================
 // Helpers
@@ -42,11 +36,9 @@ const formatDuration = (totalSeconds) => {
 };
 const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const FLATS = { 'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#' };
-const CHORD_REGEX_SRC = /([^a-zA-Z0-9]|^)([CDEFGAB][#b]?(?:m|maj|min|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?)(?=[^a-zA-Z0-9]|$)/g;
-
 const transposeText = (text, steps) => {
   if (!text) return "";
-  const chordRegex = new RegExp(CHORD_REGEX_SRC.source, 'g');
+  const chordRegex = /([^a-zA-Z0-9]|^)([CDEFGAB][#b]?(?:m|maj|min|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?)(?=[^a-zA-Z0-9]|$)/g;
   return text.replace(chordRegex, (match, prefix, chord) => {
     const rootMatch = chord.match(/^([CDEFGAB][#b]?)(.*)$/);
     if (!rootMatch) return match;
@@ -63,7 +55,6 @@ const transposeText = (text, steps) => {
     return prefix + newRoot + rest;
   });
 };
-
 const detectKey = (text) => {
   if (!text) return null;
   const keyMatch = text.match(/(?:Key|คีย์|key)\s*[:=]?\s*([CDEFGAB][#b]?m?)/i);
@@ -88,18 +79,14 @@ const TAG_COLORS = [
 ];
 const getTagColor = (tag) => TAG_COLORS[Math.abs(tag.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % TAG_COLORS.length];
 
-// ย้ายมาไว้ระดับ module (เดิมประกาศหลังจุดที่ใช้ — เสี่ยง TDZ)
-const SECTION_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
-
 // ==========================================
-// Excel Template download
+// Excel Template + Import
 // ==========================================
 const downloadTemplate = () => {
   const ws = XLSX.utils.aoa_to_sheet([
     ['ชื่อเพลง (title)*', 'ศิลปิน (artist)', 'คีย์ (key)', 'BPM', 'ความยาว (duration mm:ss)', 'แท็ก (tags คั่นด้วย,)'],
     ['สักวันหนึ่ง', 'Bodyslam', 'C', '90', '04:20', 'เพลงช้า,เปิดตัว'],
     ['มาตาม', 'Labanoon', 'Am', '120', '03:45', 'เพลงเร็ว'],
-    ['ยังคิดถึง', 'Loso', 'G', '100', '04:00', ''],
   ]);
   ws['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 8 }, { wch: 6 }, { wch: 22 }, { wch: 24 }];
   const wb = XLSX.utils.book_new();
@@ -107,9 +94,6 @@ const downloadTemplate = () => {
   XLSX.writeFile(wb, 'setlist_template.xlsx');
 };
 
-// ==========================================
-// Import Excel / CSV parser
-// ==========================================
 const parseImportFile = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -137,17 +121,8 @@ const parseImportFile = (file) => new Promise((resolve, reject) => {
           key: colIdx.key >= 0 ? String(row[colIdx.key] || '').trim() || 'C' : 'C',
           bpm: colIdx.bpm >= 0 ? String(row[colIdx.bpm] || '').trim() || '120' : '120',
           duration: colIdx.duration >= 0 ? String(row[colIdx.duration] || '').trim() || '03:30' : '03:30',
-          tags: colIdx.tags >= 0
-            ? String(row[colIdx.tags] || '').split(',').map(t => t.trim()).filter(Boolean)
-            : [],
-          order: i,
-          imageUrl: null,
-          chordText: null,
-          links: [],
-          notes: '',
-          sharedCues: '',
-          history: [],
-          sections: [],
+          tags: colIdx.tags >= 0 ? String(row[colIdx.tags] || '').split(',').map(t => t.trim()).filter(Boolean) : [],
+          order: i, imageUrl: null, chordText: null, links: [], notes: '', sharedCues: '', history: [], sections: [],
         }));
       resolve(songs);
     } catch (err) { reject(err); }
@@ -161,10 +136,9 @@ const parseImportFile = (file) => new Promise((resolve, reject) => {
 // ==========================================
 const exportSetlistPDF = (songs, playlist, includeChords = false) => {
   const win = window.open('', '_blank');
-  if (!win) { alert('เบราว์เซอร์บล็อก Popup — กรุณาอนุญาต Popup สำหรับเว็บนี้'); return; }
+  const chordRegex = /([^a-zA-Z0-9]|^)([CDEFGAB][#b]?(?:m|maj|min|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?)(?=[^a-zA-Z0-9]|$)/g;
 
   const renderChordLine = (line) => {
-    const chordRegex = new RegExp(CHORD_REGEX_SRC.source, 'g');
     return line.replace(chordRegex, (match, prefix, chord) =>
       `${prefix}<span style="color:#b45309;font-weight:bold;background:#fef3c7;padding:0 3px;border-radius:3px;">${chord}</span>`
     );
@@ -234,13 +208,13 @@ ${songHTML}
 // Sub-components
 // ==========================================
 
-// ---- TagBadge ----
+// TagBadge
 const TagBadge = ({ tag, onRemove, small = false }) => {
   const c = getTagColor(tag);
   return (
     <span className={`flex items-center gap-1 rounded-full border ${c.bg} ${c.border} ${c.text} ${small ? 'text-[10px] px-1.5 py-0' : 'text-xs px-2 py-0.5'}`}>
       {tag}
-      {onRemove && <button onClick={() => onRemove(tag)} className="hover:opacity-70"><X size={small ? 8 : 10} /></button>}
+      {onRemove && <button onClick={() => onRemove(tag)}><X size={small ? 8 : 10} /></button>}
     </span>
   );
 };
@@ -341,6 +315,7 @@ function RehearsalModal({ song, onClose, theme }) {
   const [highlightedSection, setHighlightedSection] = useState(null);
   const loopRef = useRef(null);
 
+  // Default section names
   const SECTION_PRESETS = ['Intro', 'Verse 1', 'Pre-Chorus', 'Chorus', 'Verse 2', 'Bridge', 'Solo', 'Outro', 'Hook'];
 
   const chordLines = (song.chordText || '').split('\n');
@@ -371,6 +346,7 @@ function RehearsalModal({ song, onClose, theme }) {
 
   const stopLoop = () => { setIsLooping(false); setLoopSection(null); setHighlightedSection(null); };
 
+  // Loop counter (visual only — counts based on time if bpm available)
   useEffect(() => {
     if (!isLooping || !loopSection || !song.bpm) return;
     const lineCount = loopSection.end - loopSection.start + 1;
@@ -386,13 +362,16 @@ function RehearsalModal({ song, onClose, theme }) {
     return () => clearInterval(loopRef.current);
   }, [isLooping, loopSection, maxLoops, song.bpm]);
 
+  const SECTION_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
+
   const getLineSection = (lineIdx) => sections.find(s => lineIdx >= s.start && lineIdx <= s.end);
 
   const renderChordLine = (line, lineIdx) => {
+    const chordRegex = /([^a-zA-Z0-9]|^)([CDEFGAB][#b]?(?:m|maj|min|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?)(?=[^a-zA-Z0-9]|$)/g;
     const sec = getLineSection(lineIdx);
     const isHighlighted = highlightedSection && sec?.id === highlightedSection;
     const parts = []; let lastIndex = 0; let match;
-    const regex = new RegExp(CHORD_REGEX_SRC.source, 'g');
+    const regex = new RegExp(chordRegex);
     while ((match = regex.exec(line)) !== null) {
       const before = line.substring(lastIndex, match.index + match[1].length);
       if (before) parts.push(before);
@@ -404,10 +383,11 @@ function RehearsalModal({ song, onClose, theme }) {
 
     return (
       <div key={lineIdx} id={`line-${lineIdx}`}
-        className="whitespace-pre-wrap break-words px-2 py-0.5 rounded transition-all"
+        className={`whitespace-pre-wrap break-words px-2 py-0.5 rounded transition-all ${isHighlighted ? 'ring-1' : ''}`}
         style={{
-          background: isHighlighted ? sec.color + '33' : (sec ? sec.color + '11' : 'transparent'),
+          background: isHighlighted ? sec.color + '22' : (sec ? sec.color + '11' : 'transparent'),
           borderLeft: sec ? `3px solid ${sec.color}` : '3px solid transparent',
+          ringColor: isHighlighted ? sec?.color : undefined,
         }}>
         {editMode && (
           <span className="text-xs text-gray-600 select-none mr-2 font-mono">{lineIdx + 1}</span>
@@ -460,6 +440,7 @@ function RehearsalModal({ song, onClose, theme }) {
           <div className="p-3 border-b border-gray-800 flex-shrink-0">
             <p className="text-xs text-gray-400 font-semibold mb-2 flex items-center gap-1"><Repeat size={12} /> ท่อนเพลง (Sections)</p>
 
+            {/* Loop Status */}
             {isLooping && loopSection && (
               <div className="mb-2 p-2 rounded-lg border text-xs" style={{ borderColor: loopSection.color, background: loopSection.color + '22' }}>
                 <div className="flex justify-between items-center">
@@ -475,6 +456,7 @@ function RehearsalModal({ song, onClose, theme }) {
               </div>
             )}
 
+            {/* Max loops control */}
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs text-gray-400">ลูป:</span>
               {[2, 4, 8, 16].map(n => (
@@ -483,6 +465,7 @@ function RehearsalModal({ song, onClose, theme }) {
             </div>
           </div>
 
+          {/* Section list */}
           <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
             {sections.length === 0 && !editMode && (
               <p className="text-xs text-gray-600 text-center py-4">กดปุ่ม "จัดท่อน"<br />เพื่อเพิ่มท่อน</p>
@@ -507,6 +490,7 @@ function RehearsalModal({ song, onClose, theme }) {
             ))}
           </div>
 
+          {/* Add section form */}
           {editMode && (
             <div className="p-3 border-t border-gray-800 flex-shrink-0 space-y-2">
               <p className="text-xs text-gray-400 font-semibold">เพิ่มท่อนใหม่</p>
@@ -560,6 +544,7 @@ function PDFExportModal({ songs, playlist, onClose }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* Options */}
           <div className="bg-gray-900 rounded-xl p-4 space-y-3">
             <p className="text-sm font-semibold text-gray-300">ตัวเลือก</p>
             <label className="flex items-center gap-3 cursor-pointer">
@@ -574,6 +559,7 @@ function PDFExportModal({ songs, playlist, onClose }) {
             </label>
           </div>
 
+          {/* Song selection */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm font-semibold text-gray-300">เลือกเพลง ({selectedIds.size}/{songs.length})</p>
@@ -598,6 +584,7 @@ function PDFExportModal({ songs, playlist, onClose }) {
             </div>
           </div>
 
+          {/* Summary */}
           <div className="bg-gray-900 rounded-xl p-3 flex items-center justify-between">
             <span className="text-sm text-gray-400">{selectedIds.size} เพลง • {formatDuration(totalSecs)}</span>
             {includeChords && <span className="text-xs text-yellow-500 flex items-center gap-1"><AlertCircle size={12} /> รวมคอร์ด</span>}
@@ -620,7 +607,7 @@ function PDFExportModal({ songs, playlist, onClose }) {
 
 // ---- Import Modal ----
 function ImportModal({ onClose, onImport, playlists }) {
-  const [step, setStep] = useState('upload'); // upload | preview | importing | done
+  const [step, setStep] = useState('upload');
   const [previewRows, setPreviewRows] = useState([]);
   const [errors, setErrors] = useState([]);
   const [targetPlaylistId, setTargetPlaylistId] = useState(playlists[0]?.id || '');
@@ -628,59 +615,32 @@ function ImportModal({ onClose, onImport, playlists }) {
   const [isDrag, setIsDrag] = useState(false);
 
   const handleFile = async (file) => {
-    try {
-      const rows = await parseImportFile(file);
-      setPreviewRows(rows);
-      setErrors([]);
-      setStep('preview');
-    } catch (e) {
-      setErrors([e.message]);
-    }
+    try { const rows = await parseImportFile(file); setPreviewRows(rows); setErrors([]); setStep('preview'); }
+    catch (e) { setErrors([e.message]); }
   };
 
   const handleImport = async () => {
     setStep('importing');
-    try {
-      // ✅ FIX 3: getDocs ตรง ๆ + หา max(order) ใน JS (ไม่ต้องสร้าง Composite Index)
-      const existingSnap = await getDocs(
-        query(collection(db, 'songs'), where('playlistId', '==', targetPlaylistId))
-      );
-      let maxOrder = -1;
-      existingSnap.forEach(d => {
-        const o = d.data().order;
-        if (typeof o === 'number' && o > maxOrder) maxOrder = o;
-      });
-      const startOrder = maxOrder + 1;
-
-      let count = 0;
-      for (const [i, song] of previewRows.entries()) {
-        await addDoc(collection(db, 'songs'), {
-          ...song,
-          order: startOrder + i,
-          playlistId: targetPlaylistId,
-        });
-        count++;
-        setProgress(Math.round((count / previewRows.length) * 100));
-      }
-      setStep('done');
-      onImport();
-    } catch (e) {
-      setErrors([e.message || 'Import ไม่สำเร็จ']);
-      setStep('preview');
+    const q = query(collection(db, 'songs'), where('playlistId', '==', targetPlaylistId), orderBy('order', 'desc'));
+    const snap = await getDocs(q);
+    const startOrder = snap.empty ? 0 : (snap.docs[0].data().order || 0) + 1;
+    let count = 0;
+    for (const [i, song] of previewRows.entries()) {
+      await addDoc(collection(db, 'songs'), { ...song, order: startOrder + i, playlistId: targetPlaylistId });
+      count++;
+      setProgress(Math.round((count / previewRows.length) * 100));
     }
+    setStep('done');
+    onImport();
   };
 
   return (
     <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="bg-gray-800 rounded-2xl w-full max-w-2xl border border-gray-700 shadow-2xl max-h-[90vh] flex flex-col">
         <div className="flex justify-between items-center p-5 border-b border-gray-700 flex-shrink-0">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <ArrowUpFromLine size={20} className="text-green-400" />
-            Import เพลงจาก Excel / CSV
-          </h2>
+          <h2 className="text-xl font-bold flex items-center gap-2"><ArrowUpFromLine size={20} className="text-green-400" />Import จาก Excel / CSV</h2>
           <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-white" /></button>
         </div>
-
         <div className="flex-1 overflow-y-auto p-5">
           {step === 'upload' && (
             <div className="space-y-5">
@@ -688,86 +648,59 @@ function ImportModal({ onClose, onImport, playlists }) {
                 <Table size={20} className="text-blue-400 flex-shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <p className="text-blue-200 font-semibold text-sm">ขั้นตอนที่ 1: ดาวน์โหลด Template</p>
-                  <p className="text-blue-400 text-xs mt-1">ดาวน์โหลดไฟล์ Excel Template แจกให้สมาชิกไปกรอก แล้ว Import กลับมา</p>
-                  <button onClick={downloadTemplate} className="mt-3 flex items-center gap-2 px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm font-semibold text-white transition">
+                  <p className="text-blue-400 text-xs mt-1">แจกให้สมาชิกไปกรอก แล้ว Import กลับมา</p>
+                  <button onClick={downloadTemplate} className="mt-3 flex items-center gap-2 px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm font-semibold text-white">
                     <Download size={14} /> ดาวน์โหลด Template (.xlsx)
                   </button>
                 </div>
               </div>
-
               <div>
-                <p className="text-sm text-gray-300 font-semibold mb-2">ขั้นตอนที่ 2: อัปโหลดไฟล์ที่กรอกแล้ว</p>
-                <div
-                  className={`border-2 border-dashed rounded-xl p-10 text-center transition-all ${isDrag ? 'border-green-500 bg-green-900/20' : 'border-gray-600 hover:border-gray-400'}`}
-                  onDragOver={e => { e.preventDefault(); setIsDrag(true); }}
-                  onDragLeave={() => setIsDrag(false)}
-                  onDrop={e => { e.preventDefault(); setIsDrag(false); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}
-                >
+                <p className="text-sm text-gray-300 font-semibold mb-2">ขั้นตอนที่ 2: อัปโหลดไฟล์</p>
+                <div className={`border-2 border-dashed rounded-xl p-10 text-center transition-all ${isDrag ? 'border-green-500 bg-green-900/20' : 'border-gray-600 hover:border-gray-400'}`}
+                  onDragOver={e => { e.preventDefault(); setIsDrag(true); }} onDragLeave={() => setIsDrag(false)}
+                  onDrop={e => { e.preventDefault(); setIsDrag(false); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}>
                   <ArrowUpFromLine size={36} className={`mx-auto mb-3 ${isDrag ? 'text-green-400' : 'text-gray-500'}`} />
                   <p className="text-gray-300 font-semibold">ลากไฟล์มาวางที่นี่</p>
-                  <p className="text-gray-500 text-sm mt-1">หรือ</p>
                   <label className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm cursor-pointer font-semibold">
                     <Upload size={14} /> เลือกไฟล์ .xlsx / .csv
                     <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e => e.target.files[0] && handleFile(e.target.files[0])} />
                   </label>
                 </div>
               </div>
-
               {errors.length > 0 && (
                 <div className="bg-red-900/40 border border-red-700 rounded-xl p-3 flex items-start gap-2">
-                  <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-red-300 text-sm">{errors[0]}</p>
+                  <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" /><p className="text-red-300 text-sm">{errors[0]}</p>
                 </div>
               )}
             </div>
           )}
-
           {step === 'preview' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <p className="text-green-400 font-semibold flex items-center gap-2">
-                  <CheckSquare size={16} /> พบข้อมูล {previewRows.length} เพลง — ตรวจสอบก่อน Import
-                </p>
+                <p className="text-green-400 font-semibold flex items-center gap-2"><CheckSquare size={16} /> พบ {previewRows.length} เพลง</p>
                 <button onClick={() => setStep('upload')} className="text-xs text-gray-400 hover:text-white flex items-center gap-1"><ArrowLeft size={12} />เลือกไฟล์ใหม่</button>
               </div>
-
-              {errors.length > 0 && (
-                <div className="bg-red-900/40 border border-red-700 rounded-xl p-3 flex items-start gap-2">
-                  <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-red-300 text-sm">{errors[0]}</p>
-                </div>
-              )}
-
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Import เข้า Playlist</label>
                 <select value={targetPlaylistId} onChange={e => setTargetPlaylistId(e.target.value)}
                   className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-blue-500">
-                  {playlists.map(p => (
-                    <option key={p.id} value={p.id}>{p.icon} {p.name}</option>
-                  ))}
+                  {playlists.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)}
                 </select>
               </div>
-
               <div className="overflow-x-auto rounded-xl border border-gray-700">
                 <table className="w-full text-xs">
                   <thead className="bg-gray-900 text-gray-400">
-                    <tr>{['ชื่อเพลง', 'ศิลปิน', 'Key', 'BPM', 'ความยาว', 'แท็ก'].map(h => (
-                      <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>
-                    ))}</tr>
+                    <tr>{['ชื่อเพลง', 'ศิลปิน', 'Key', 'BPM', 'ความยาว', 'แท็ก'].map(h => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
                   </thead>
                   <tbody>
                     {previewRows.map((r, i) => (
                       <tr key={i} className={`border-t border-gray-700 ${i % 2 === 0 ? 'bg-gray-800/50' : ''}`}>
                         <td className="px-3 py-2 font-semibold text-white">{r.title}</td>
                         <td className="px-3 py-2 text-gray-300">{r.artist}</td>
-                        <td className="px-3 py-2"><span className="font-mono text-blue-300">{r.key}</span></td>
+                        <td className="px-3 py-2 font-mono text-blue-300">{r.key}</td>
                         <td className="px-3 py-2 text-gray-400">{r.bpm}</td>
                         <td className="px-3 py-2 text-yellow-600">{r.duration}</td>
-                        <td className="px-3 py-2">
-                          <div className="flex flex-wrap gap-1">
-                            {r.tags.map((t, ti) => <TagBadge key={ti} tag={t} small />)}
-                          </div>
-                        </td>
+                        <td className="px-3 py-2"><div className="flex flex-wrap gap-1">{r.tags.map((t, ti) => <TagBadge key={ti} tag={t} small />)}</div></td>
                       </tr>
                     ))}
                   </tbody>
@@ -775,7 +708,6 @@ function ImportModal({ onClose, onImport, playlists }) {
               </div>
             </div>
           )}
-
           {step === 'importing' && (
             <div className="py-10 text-center space-y-4">
               <div className="w-16 h-16 mx-auto rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
@@ -785,31 +717,25 @@ function ImportModal({ onClose, onImport, playlists }) {
               </div>
             </div>
           )}
-
           {step === 'done' && (
             <div className="py-10 text-center space-y-3">
-              <div className="w-16 h-16 mx-auto rounded-full bg-green-700 flex items-center justify-center">
-                <CheckSquare size={32} className="text-white" />
-              </div>
+              <div className="w-16 h-16 mx-auto rounded-full bg-green-700 flex items-center justify-center"><CheckSquare size={32} className="text-white" /></div>
               <p className="text-white font-bold text-lg">Import สำเร็จ!</p>
-              <p className="text-gray-400 text-sm">เพิ่ม {previewRows.length} เพลง เรียบร้อยแล้ว</p>
+              <p className="text-gray-400 text-sm">เพิ่ม {previewRows.length} เพลงเรียบร้อยแล้ว</p>
             </div>
           )}
         </div>
-
         <div className="flex gap-3 p-5 border-t border-gray-700 flex-shrink-0">
           {step === 'preview' && (
             <>
-              <button onClick={() => setStep('upload')} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold transition">ย้อนกลับ</button>
-              <button onClick={handleImport} disabled={!targetPlaylistId} className="flex-1 py-2.5 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 rounded-xl font-semibold transition flex items-center justify-center gap-2">
+              <button onClick={() => setStep('upload')} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold">ย้อนกลับ</button>
+              <button onClick={handleImport} disabled={!targetPlaylistId} className="flex-1 py-2.5 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 rounded-xl font-semibold flex items-center justify-center gap-2">
                 <ArrowUpFromLine size={16} /> Import {previewRows.length} เพลง
               </button>
             </>
           )}
           {(step === 'upload' || step === 'done') && (
-            <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold transition">
-              {step === 'done' ? 'ปิด' : 'ยกเลิก'}
-            </button>
+            <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold">{step === 'done' ? 'ปิด' : 'ยกเลิก'}</button>
           )}
         </div>
       </div>
@@ -817,68 +743,38 @@ function ImportModal({ onClose, onImport, playlists }) {
   );
 }
 
-// ---- Playlist Form Modal ----
+// ---- Playlist Form ----
 function PlaylistFormModal({ playlist, onClose, onSave }) {
   const [name, setName] = useState(playlist?.name || '');
   const [description, setDescription] = useState(playlist?.description || '');
   const [color, setColor] = useState(playlist?.color || '#3b82f6');
   const [icon, setIcon] = useState(playlist?.icon || '🎵');
-
   const ICONS = ['🎵', '🎸', '🥁', '🎹', '🎺', '🎻', '🎤', '🎧', '⭐', '🔥', '💫', '🎭', '🎪', '🏟️', '🌙', '☀️'];
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
-
   return (
     <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="bg-gray-800 rounded-2xl w-full max-w-md border border-gray-700 shadow-2xl">
         <div className="flex justify-between items-center p-5 border-b border-gray-700">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <FolderPlus size={20} className="text-blue-400" />
-            {playlist ? 'แก้ไข Playlist' : 'สร้าง Playlist ใหม่'}
-          </h2>
+          <h2 className="text-xl font-bold flex items-center gap-2"><FolderPlus size={20} className="text-blue-400" />{playlist ? 'แก้ไข Playlist' : 'สร้าง Playlist ใหม่'}</h2>
           <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-white" /></button>
         </div>
         <div className="p-5 space-y-4">
           <div className="flex items-center gap-3 p-3 rounded-xl border border-gray-700" style={{ borderColor: color + '66' }}>
             <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl flex-shrink-0" style={{ background: color + '33' }}>{icon}</div>
-            <div>
-              <p className="font-bold text-white">{name || 'ชื่อ Playlist'}</p>
-              <p className="text-xs text-gray-400">{description || 'คำอธิบาย...'}</p>
-            </div>
+            <div><p className="font-bold text-white">{name || 'ชื่อ Playlist'}</p><p className="text-xs text-gray-400">{description || 'คำอธิบาย...'}</p></div>
           </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-1 block">ชื่อ Playlist *</label>
-            <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="เช่น งานแต่งงาน 2024, ซ้อมประจำ" className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-1 block">คำอธิบาย</label>
-            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="เช่น เพลงสำหรับงาน..." className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-2 block">ไอคอน</label>
-            <div className="flex flex-wrap gap-2">
-              {ICONS.map(ic => (
-                <button key={ic} onClick={() => setIcon(ic)}
-                  className={`w-9 h-9 rounded-lg text-lg flex items-center justify-center transition ${icon === ic ? 'bg-blue-700 ring-2 ring-blue-400' : 'bg-gray-700 hover:bg-gray-600'}`}>
-                  {ic}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-2 block">สี</label>
-            <div className="flex gap-2">
-              {COLORS.map(c => (
-                <button key={c} onClick={() => setColor(c)}
-                  className={`w-8 h-8 rounded-full transition ${color === c ? 'ring-2 ring-white scale-110' : 'hover:scale-105'}`}
-                  style={{ background: c }} />
-              ))}
-            </div>
-          </div>
+          <div><label className="text-xs text-gray-400 mb-1 block">ชื่อ *</label>
+            <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="เช่น งานแต่งงาน, ซ้อมประจำ" className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none" /></div>
+          <div><label className="text-xs text-gray-400 mb-1 block">คำอธิบาย</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="รายละเอียด..." className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none" /></div>
+          <div><label className="text-xs text-gray-400 mb-2 block">ไอคอน</label>
+            <div className="flex flex-wrap gap-2">{ICONS.map(ic => <button key={ic} onClick={() => setIcon(ic)} className={`w-9 h-9 rounded-lg text-lg flex items-center justify-center ${icon === ic ? 'bg-blue-700 ring-2 ring-blue-400' : 'bg-gray-700 hover:bg-gray-600'}`}>{ic}</button>)}</div></div>
+          <div><label className="text-xs text-gray-400 mb-2 block">สี</label>
+            <div className="flex gap-2">{COLORS.map(c => <button key={c} onClick={() => setColor(c)} className={`w-8 h-8 rounded-full transition ${color === c ? 'ring-2 ring-white scale-110' : 'hover:scale-105'}`} style={{ background: c }} />)}</div></div>
         </div>
         <div className="flex gap-3 p-5 border-t border-gray-700">
-          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold transition">ยกเลิก</button>
-          <button onClick={() => { onSave({ name, description, color, icon }); onClose(); }} disabled={!name.trim()}
-            className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 rounded-xl font-semibold transition">บันทึก</button>
+          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold">ยกเลิก</button>
+          <button onClick={() => { onSave({ name, description, color, icon }); onClose(); }} disabled={!name.trim()} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 rounded-xl font-semibold">บันทึก</button>
         </div>
       </div>
     </div>
@@ -896,8 +792,6 @@ function AddSongModal({ onClose, onSave, allSongs }) {
   const [tags, setTags] = useState([]);
   const allTags = [...new Set(allSongs.flatMap(s => s.tags || []))];
   const addTag = (t) => { const c = t.trim(); if (c && !tags.includes(c)) setTags([...tags, c]); setTagInput(''); };
-  const removeTag = (t) => setTags(tags.filter(x => x !== t));
-
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="bg-gray-800 rounded-2xl w-full max-w-lg border border-gray-700 shadow-2xl">
@@ -916,9 +810,9 @@ function AddSongModal({ onClose, onSave, allSongs }) {
                 {[...NOTES, 'Cm','Dm','Em','Fm','Gm','Am','Bm'].map(n => <option key={n}>{n}</option>)}
               </select></div>
             <div><label className="text-xs text-gray-400 mb-1 block">BPM</label>
-              <input value={bpm} onChange={e => setBpm(e.target.value)} type="number" className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none" /></div>
-            <div><label className="text-xs text-gray-400 mb-1 block">ความยาว (น:ว)</label>
-              <input value={duration} onChange={e => setDuration(e.target.value)} placeholder="03:30" className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none" /></div>
+              <input value={bpm} onChange={e => setBpm(e.target.value)} type="number" className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white outline-none" /></div>
+            <div><label className="text-xs text-gray-400 mb-1 block">ความยาว</label>
+              <input value={duration} onChange={e => setDuration(e.target.value)} placeholder="03:30" className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white outline-none" /></div>
           </div>
           <div>
             <label className="text-xs text-gray-400 mb-1 block">แท็ก</label>
@@ -926,19 +820,13 @@ function AddSongModal({ onClose, onSave, allSongs }) {
               <input value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(tagInput); } }} placeholder="พิมพ์แล้วกด Enter" className="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none text-sm" />
               <button onClick={() => addTag(tagInput)} className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm">เพิ่ม</button>
             </div>
-            {allTags.filter(t => !tags.includes(t)).length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-2">{allTags.filter(t => !tags.includes(t)).map(t => (
-                <button key={t} onClick={() => addTag(t)} className={`text-xs px-2 py-0.5 rounded-full border opacity-60 hover:opacity-100 ${getTagColor(t).bg} ${getTagColor(t).border} ${getTagColor(t).text}`}>+ {t}</button>
-              ))}</div>
-            )}
-            {tags.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-2">{tags.map(t => <TagBadge key={t} tag={t} onRemove={removeTag} />)}</div>
-            )}
+            {allTags.filter(t => !tags.includes(t)).length > 0 && <div className="flex flex-wrap gap-1 mt-2">{allTags.filter(t => !tags.includes(t)).map(t => <button key={t} onClick={() => addTag(t)} className={`text-xs px-2 py-0.5 rounded-full border opacity-60 hover:opacity-100 ${getTagColor(t).bg} ${getTagColor(t).border} ${getTagColor(t).text}`}>+ {t}</button>)}</div>}
+            {tags.length > 0 && <div className="flex flex-wrap gap-1 mt-2">{tags.map(t => <TagBadge key={t} tag={t} onRemove={t2 => setTags(tags.filter(x => x !== t2))} />)}</div>}
           </div>
         </div>
         <div className="flex gap-3 p-5 border-t border-gray-700">
-          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold transition">ยกเลิก</button>
-          <button onClick={() => { if (!title.trim()) return; onSave({ title: title.trim(), artist: artist.trim() || 'ไม่ระบุ', key, bpm, duration, tags, imageUrl: null, chordText: null, links: [], notes: '', sharedCues: '', history: [], sections: [] }); onClose(); }} disabled={!title.trim()} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 rounded-xl font-semibold transition">บันทึก</button>
+          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold">ยกเลิก</button>
+          <button onClick={() => { if (!title.trim()) return; onSave({ title: title.trim(), artist: artist.trim() || 'ไม่ระบุ', key, bpm, duration, tags, imageUrl: null, chordText: null, links: [], notes: '', sharedCues: '', history: [], sections: [] }); onClose(); }} disabled={!title.trim()} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 rounded-xl font-semibold">บันทึก</button>
         </div>
       </div>
     </div>
@@ -952,8 +840,8 @@ function EditSongModal({ song, onClose, onSave, allSongs }) {
   const [key, setKey] = useState(song.key || 'C');
   const [bpm, setBpm] = useState(song.bpm || '120');
   const [duration, setDuration] = useState(song.duration || '03:30');
-  const [tagInput, setTagInput] = useState('');
   const [tags, setTags] = useState(song.tags || []);
+  const [tagInput, setTagInput] = useState('');
   const [links, setLinks] = useState(song.links || []);
   const [linkInput, setLinkInput] = useState('');
   const [linkLabel, setLinkLabel] = useState('');
@@ -963,9 +851,7 @@ function EditSongModal({ song, onClose, onSave, allSongs }) {
   const allTags = [...new Set(allSongs.flatMap(s => s.tags || []))];
   const addTag = (t) => { const c = t.trim(); if (c && !tags.includes(c)) setTags([...tags, c]); setTagInput(''); };
   const addLink = () => { if (!linkInput.trim()) return; setLinks([...links, { url: linkInput.trim(), label: linkLabel.trim() || linkInput.trim() }]); setLinkInput(''); setLinkLabel(''); };
-
   const TABS = [{ id: 'info', label: 'ข้อมูล' }, { id: 'tags', label: 'แท็ก' }, { id: 'links', label: 'ลิงก์' }, { id: 'notes', label: 'โน้ต' }];
-
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="bg-gray-800 rounded-2xl w-full max-w-lg border border-gray-700 shadow-2xl max-h-[90vh] flex flex-col">
@@ -993,49 +879,28 @@ function EditSongModal({ song, onClose, onSave, allSongs }) {
           )}
           {activeTab === 'tags' && (
             <div className="space-y-3">
-              <div className="flex gap-2">
-                <input value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(tagInput); } }} placeholder="พิมพ์แล้วกด Enter" className="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none text-sm" />
-                <button onClick={() => addTag(tagInput)} className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm">เพิ่ม</button>
-              </div>
-              {allTags.filter(t => !tags.includes(t)).length > 0 && (
-                <div className="flex flex-wrap gap-1">{allTags.filter(t => !tags.includes(t)).map(t => (
-                  <button key={t} onClick={() => addTag(t)} className={`text-xs px-2 py-0.5 rounded-full border opacity-60 hover:opacity-100 ${getTagColor(t).bg} ${getTagColor(t).border} ${getTagColor(t).text}`}>+ {t}</button>
-                ))}</div>
-              )}
+              <div className="flex gap-2"><input value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(tagInput); } }} placeholder="พิมพ์แล้วกด Enter" className="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white focus:border-blue-500 outline-none text-sm" /><button onClick={() => addTag(tagInput)} className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm">เพิ่ม</button></div>
+              {allTags.filter(t => !tags.includes(t)).length > 0 && <div className="flex flex-wrap gap-1">{allTags.filter(t => !tags.includes(t)).map(t => <button key={t} onClick={() => addTag(t)} className={`text-xs px-2 py-0.5 rounded-full border opacity-60 hover:opacity-100 ${getTagColor(t).bg} ${getTagColor(t).border} ${getTagColor(t).text}`}>+ {t}</button>)}</div>}
               <div className="flex flex-wrap gap-1 min-h-8">{tags.length === 0 ? <span className="text-gray-600 text-sm">ยังไม่มีแท็ก</span> : tags.map(t => <TagBadge key={t} tag={t} onRemove={t2 => setTags(tags.filter(x => x !== t2))} />)}</div>
             </div>
           )}
           {activeTab === 'links' && (
             <div className="space-y-3">
               <input value={linkLabel} onChange={e => setLinkLabel(e.target.value)} placeholder="ชื่อลิงก์ (เช่น YouTube)" className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white outline-none text-sm" />
-              <div className="flex gap-2">
-                <input value={linkInput} onChange={e => setLinkInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addLink()} placeholder="https://..." className="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white outline-none text-sm" />
-                <button onClick={addLink} className="px-3 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm">เพิ่ม</button>
-              </div>
-              <div className="space-y-2">
-                {links.length === 0 && <p className="text-gray-600 text-sm">ยังไม่มีลิงก์</p>}
-                {links.map((lk, i) => (
-                  <div key={i} className="flex items-center gap-2 bg-gray-900 rounded-lg p-2 border border-gray-700">
-                    <Link size={12} className="text-blue-400 flex-shrink-0" />
-                    <a href={lk.url} target="_blank" rel="noopener noreferrer" className="flex-1 text-blue-300 hover:text-blue-100 text-sm truncate">{lk.label}</a>
-                    <button onClick={() => setLinks(links.filter((_, idx) => idx !== i))}><X size={14} className="text-gray-500 hover:text-red-400" /></button>
-                  </div>
-                ))}
-              </div>
+              <div className="flex gap-2"><input value={linkInput} onChange={e => setLinkInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addLink()} placeholder="https://..." className="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white outline-none text-sm" /><button onClick={addLink} className="px-3 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm">เพิ่ม</button></div>
+              <div className="space-y-2">{links.length === 0 && <p className="text-gray-600 text-sm">ยังไม่มีลิงก์</p>}{links.map((lk, i) => <div key={i} className="flex items-center gap-2 bg-gray-900 rounded-lg p-2 border border-gray-700"><Link size={12} className="text-blue-400 flex-shrink-0" /><a href={lk.url} target="_blank" rel="noopener noreferrer" className="flex-1 text-blue-300 hover:text-blue-100 text-sm truncate">{lk.label}</a><button onClick={() => setLinks(links.filter((_, idx) => idx !== i))}><X size={14} className="text-gray-500 hover:text-red-400" /></button></div>)}</div>
             </div>
           )}
           {activeTab === 'notes' && (
             <div className="space-y-3">
-              <div><label className="text-xs text-gray-400 mb-1 flex items-center gap-1"><Eye size={11} /> Shared Cues (ทั้งวงเห็น)</label>
-                <textarea value={sharedCues} onChange={e => setSharedCues(e.target.value)} rows={3} placeholder="เช่น โซโล่กีตาร์ 2 รอบ, จบแบบตัด..." className="w-full bg-gray-900 border border-blue-800 rounded-lg px-3 py-2 text-white outline-none text-sm resize-none" /></div>
-              <div><label className="text-xs text-gray-400 mb-1 flex items-center gap-1"><EyeOff size={11} /> Notes (บันทึกในเพลง)</label>
-                <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="เช่น เหยียบ delay ท่อนฮุค..." className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white outline-none text-sm resize-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1 flex items-center gap-1"><Eye size={11} /> Shared Cues (ทั้งวงเห็น)</label><textarea value={sharedCues} onChange={e => setSharedCues(e.target.value)} rows={3} placeholder="เช่น โซโล่กีตาร์ 2 รอบ..." className="w-full bg-gray-900 border border-blue-800 rounded-lg px-3 py-2 text-white outline-none text-sm resize-none" /></div>
+              <div><label className="text-xs text-gray-400 mb-1 flex items-center gap-1"><EyeOff size={11} /> Personal Notes (เห็นแค่ตัวเอง)</label><textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="เช่น เหยียบ delay ท่อนฮุค..." className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white outline-none text-sm resize-none" /></div>
             </div>
           )}
         </div>
         <div className="flex gap-3 p-5 border-t border-gray-700 flex-shrink-0">
-          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold transition">ยกเลิก</button>
-          <button onClick={() => { onSave({ title, artist, key, bpm, duration, tags, links, notes, sharedCues }); onClose(); }} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-semibold transition">บันทึก</button>
+          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold">ยกเลิก</button>
+          <button onClick={() => { onSave({ title, artist, key, bpm, duration, tags, links, notes, sharedCues }); onClose(); }} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-semibold">บันทึก</button>
         </div>
       </div>
     </div>
@@ -1047,9 +912,7 @@ function SettingsModal({ theme, onClose, onSave }) {
   const [bg, setBg] = useState(theme.bg || '#000000');
   const [textColor, setTextColor] = useState(theme.textColor || '#ffffff');
   const [chordColor, setChordColor] = useState(theme.chordColor || '#facc15');
-  const [bgImage, setBgImage] = useState(theme.bgImage || ''); // เพิ่มรูปภาพ
   const [preset, setPreset] = useState('custom');
-  
   const presets = [
     { id: 'dark', label: 'Dark', bg: '#000000', textColor: '#ffffff', chordColor: '#facc15' },
     { id: 'navy', label: 'Navy', bg: '#0f172a', textColor: '#e2e8f0', chordColor: '#38bdf8' },
@@ -1057,7 +920,6 @@ function SettingsModal({ theme, onClose, onSave }) {
     { id: 'warm', label: 'Warm', bg: '#1c0a00', textColor: '#fef3c7', chordColor: '#fb923c' },
     { id: 'purple', label: 'Purple', bg: '#1e1b4b', textColor: '#e0e7ff', chordColor: '#c084fc' },
   ];
-
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="bg-gray-800 rounded-2xl w-full max-w-md border border-gray-700 shadow-2xl">
@@ -1065,7 +927,6 @@ function SettingsModal({ theme, onClose, onSave }) {
           <h2 className="text-xl font-bold flex items-center gap-2"><Settings size={18} className="text-gray-300" /> ตั้งค่าธีม Stage</h2>
           <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-white" /></button>
         </div>
-        
         <div className="p-5 space-y-4">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {presets.map(p => (
@@ -1076,55 +937,21 @@ function SettingsModal({ theme, onClose, onSave }) {
               </button>
             ))}
           </div>
-          
           <div className="space-y-3">
-            {[['สีพื้นหลัง (แผ่นฟิล์ม)', bg, setBg], ['สีตัวอักษร', textColor, setTextColor], ['สีคอร์ด', chordColor, setChordColor]].map(([label, val, setter]) => (
+            {[['สีพื้นหลัง', bg, setBg], ['สีตัวอักษร', textColor, setTextColor], ['สีคอร์ด', chordColor, setChordColor]].map(([label, val, setter]) => (
               <div key={label} className="flex items-center justify-between">
                 <label className="text-sm text-gray-300">{label}</label>
                 <div className="flex items-center gap-2"><input type="color" value={val} onChange={e => setter(e.target.value)} className="w-10 h-8 rounded cursor-pointer border-0 bg-transparent" /><span className="text-xs text-gray-400 font-mono">{val}</span></div>
               </div>
             ))}
-            
-            {/* อัปโหลดรูปพื้นหลัง */}
-            <div className="flex items-center justify-between pt-2 border-t border-gray-700">
-              <label className="text-sm text-gray-300">รูปภาพพื้นหลัง</label>
-              <div className="flex items-center gap-2">
-                {bgImage && (
-                  <button onClick={() => setBgImage('')} className="px-2 py-1 bg-red-900/50 text-red-400 hover:bg-red-800 hover:text-white rounded text-xs transition">ลบรูป</button>
-                )}
-                <label className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs cursor-pointer transition text-white">
-                  {bgImage ? 'เปลี่ยนรูป' : 'เลือกไฟล์รูป'}
-                  <input type="file" accept="image/*" className="hidden" onChange={(e) => {
-                    const file = e.target.files[0];
-                    if (!file) return;
-                    if (file.size > 3 * 1024 * 1024) return alert("รูปใหญ่เกิน 3MB อาจทำให้เว็บค้างครับ");
-                    const reader = new FileReader();
-                    reader.readAsDataURL(file);
-                    reader.onload = () => setBgImage(reader.result);
-                  }} />
-                </label>
-              </div>
-            </div>
           </div>
-
-          {/* กล่อง Preview ธีม */}
-          <div className="rounded-xl p-4 border border-gray-600 relative overflow-hidden" 
-            style={{ 
-              backgroundColor: bg,
-              // ใช้ linear-gradient ทำเป็นแผ่นฟิล์มโปร่งแสง 85% ทับรูปภาพ
-              backgroundImage: bgImage ? `linear-gradient(${bg}D9, ${bg}D9), url("${bgImage}")` : 'none',
-              backgroundSize: 'cover',
-              backgroundPosition: 'center'
-            }}>
-            <p style={{ color: textColor }} className="text-sm relative z-10 text-center py-2">
-              ตัวอย่าง <span style={{ color: chordColor, fontWeight: 'bold' }} className="px-1 rounded">Am</span> - <span style={{ color: chordColor, fontWeight: 'bold' }} className="px-1 rounded">G</span>
-            </p>
+          <div className="rounded-xl p-4 border border-gray-600" style={{ background: bg }}>
+            <p style={{ color: textColor }} className="text-sm">ตัวอย่าง <span style={{ color: chordColor, fontWeight: 'bold' }} className="px-1 rounded">Am</span> - <span style={{ color: chordColor, fontWeight: 'bold' }} className="px-1 rounded">G</span></p>
           </div>
         </div>
-
         <div className="flex gap-3 p-5 border-t border-gray-700">
-          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold text-white">ยกเลิก</button>
-          <button onClick={() => { onSave({ bg, textColor, chordColor, bgImage }); onClose(); }} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-semibold text-white">บันทึก</button>
+          <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold">ยกเลิก</button>
+          <button onClick={() => { onSave({ bg, textColor, chordColor }); onClose(); }} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-semibold">บันทึก</button>
         </div>
       </div>
     </div>
@@ -1164,7 +991,6 @@ function App() {
   const [activePlaylistId, setActivePlaylistId] = useState(null);
   const [showPlaylistForm, setShowPlaylistForm] = useState(false);
   const [editingPlaylist, setEditingPlaylist] = useState(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // --- Songs ---
   const [songs, setSongs] = useState([]);
@@ -1194,10 +1020,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showPDFExport, setShowPDFExport] = useState(false);
+  const [songToCopy, setSongToCopy] = useState(null);
   const [filterTag, setFilterTag] = useState('');
-  const [isMigrating, setIsMigrating] = useState(false);   // ✅ FIX 4
-  const [showPersonalNotes, setShowPersonalNotes] = useState(false);
-  const [personalNotesText, setPersonalNotesText] = useState('');
   const [theme, setTheme] = useState(() => {
     try { return JSON.parse(localStorage.getItem('stage_theme')) || { bg: '#000000', textColor: '#ffffff', chordColor: '#facc15' }; } catch { return { bg: '#000000', textColor: '#ffffff', chordColor: '#facc15' }; }
   });
@@ -1274,35 +1098,6 @@ function App() {
 
   const saveTheme = (t) => { setTheme(t); localStorage.setItem('stage_theme', JSON.stringify(t)); };
 
-  // ==========================================
-  // ✅ FIX 4: Migration ในแอป (แทนการวางโค้ดใน Browser Console)
-  // รันครั้งเดียวแล้วลบปุ่มนี้ออกได้
-  // ==========================================
-  const runOrderMigration = async () => {
-    if (!window.confirm('ยืนยันรัน Migration?\nจะเติมฟิลด์ order ให้เพลงที่ยังไม่มี (ทำครั้งเดียวพอ)')) return;
-    setIsMigrating(true);
-    try {
-      const snap = await getDocs(collection(db, 'songs'));
-      const targets = snap.docs.filter(d => typeof d.data().order !== 'number');
-      if (targets.length === 0) { alert('ไม่มีเอกสารที่ต้องอัปเดต ✅'); return; }
-
-      const CHUNK = 450;   // Firestore batch จำกัด 500 ops/ครั้ง
-      let counter = 0;
-      for (let i = 0; i < targets.length; i += CHUNK) {
-        const batch = writeBatch(db);
-        targets.slice(i, i + CHUNK).forEach(d => {
-          batch.update(doc(db, 'songs', d.id), { order: counter++ });
-        });
-        await batch.commit();
-      }
-      alert(`Migration สำเร็จ — อัปเดต ${targets.length} รายการ`);
-    } catch (e) {
-      alert('Migration ล้มเหลว: ' + e.message);
-    } finally {
-      setIsMigrating(false);
-    }
-  };
-
   // Playlist handlers
   const handleCreatePlaylist = async (data) => { await addDoc(collection(db, 'playlists'), { ...data, order: playlists.length, createdAt: Date.now() }); };
   const handleUpdatePlaylist = async (id, data) => { await updateDoc(doc(db, 'playlists', id), data); };
@@ -1315,6 +1110,37 @@ function App() {
     batch.delete(doc(db, 'playlists', id));
     await batch.commit();
     if (activePlaylistId === id) setActivePlaylistId(playlists.find(p => p.id !== id)?.id || null);
+  };
+
+  const handleDuplicatePlaylist = async (playlistToCopy) => {
+    if (!window.confirm(`ต้องการทำสำเนา Playlist "${playlistToCopy.name}" และเพลงทั้งหมดข้างใน ใช่หรือไม่?`)) return;
+    try {
+      const newPlaylistRef = await addDoc(collection(db, 'playlists'), {
+        ...playlistToCopy,
+        id: undefined,
+        name: `${playlistToCopy.name} (สำเนา)`,
+        order: playlists.length,
+        createdAt: serverTimestamp()
+      });
+      const q = query(collection(db, 'songs'), where('playlistId', '==', playlistToCopy.id));
+      const snapshot = await getDocs(q);
+      const batch = writeBatch(db);
+      snapshot.forEach((docSnap) => {
+        const newSongRef = doc(collection(db, 'songs'));
+        batch.set(newSongRef, { ...docSnap.data(), playlistId: newPlaylistRef.id, createdAt: serverTimestamp() });
+      });
+      await batch.commit();
+      alert(`ทำสำเนาเรียบร้อย! (${snapshot.size} เพลง)`);
+    } catch (error) { alert("Error: " + error.message); }
+  };
+
+  const handleCopySongToPlaylist = async (song, targetPlaylistId) => {
+    try {
+      const { id, ...songData } = song;
+      await addDoc(collection(db, 'songs'), { ...songData, playlistId: targetPlaylistId, order: 9999, createdAt: serverTimestamp() });
+      setSongToCopy(null);
+      alert("ส่งเพลงไป Playlist ใหม่สำเร็จ!");
+    } catch (e) { alert("Error: " + e.message); }
   };
 
   // Song handlers
@@ -1357,47 +1183,31 @@ function App() {
     reader.onerror = () => { alert("อ่านไฟล์ไม่สำเร็จ"); setIsUploading(false); };
   };
 
-  // ✅ FIX 5: Gemini 3.6-flash + key ใน header + อ่านผลแบบกันพัง
   const processImageWithAI = async (file) => {
     if (!file || !selectedSong) return;
-    
-    // ไม่ต้องขอ Key ผ่าน prompt หรือ localStorage อีกต่อไปแล้ว! 🎉
-    
+    let apiKey = localStorage.getItem('gemini_api_key');
+    if (!apiKey) { apiKey = prompt("🔑 Gemini API Key (รับฟรีที่ aistudio.google.com):"); if (!apiKey) return; localStorage.setItem('gemini_api_key', apiKey); }
     setIsUploading(true);
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = async () => {
       const base64Data = reader.result.split(',')[1];
-      const mimeType = file.type;
-
       try {
-        // ยิงไปหา Vercel Function ของเรา (ตำแหน่ง /api/gemini)
-        const res = await fetch('/api/gemini', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ base64Data, mimeType })
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: "Extract the lyrics and chords from this image. Output ONLY the raw text. Do NOT use markdown code blocks. Preserve the exact placement of chords relative to the lyrics." }, { inline_data: { mime_type: file.type, data: base64Data } }] }] })
         });
-        
         const data = await res.json();
-        
-        if (!data.success) throw new Error(data.message);
-        
-        // รับคอร์ดกลับมาใช้งาน
-        let text = data.text.replace(/```/g, '').trim();
+        if (data.error) throw new Error(data.error.message);
+        let text = data.candidates[0].content.parts[0].text.replace(/```/g, '').trim();
         const detectedKey = detectKey(text);
-        
-        setTempText(text); 
-        setIsEditingText(true);
-        
-        if (detectedKey && detectedKey !== selectedSong.key && window.confirm(`AI เจอคีย์ "${detectedKey}" อัปเดตคีย์ไหม?`)) {
+        setTempText(text); setIsEditingText(true);
+        if (detectedKey && detectedKey !== selectedSong.key && window.confirm(`AI เจอคีย์ "${detectedKey}" อัปเดตไหม?`)) {
           await updateDoc(doc(db, 'songs', selectedSong.id), { key: detectedKey });
           setSelectedSong(s => ({ ...s, key: detectedKey }));
         }
-      } catch (e) { 
-        alert("AI Error: " + e.message); 
-      } finally { 
-        setIsUploading(false); 
-      }
+      } catch (e) { alert("AI Error: " + e.message); localStorage.removeItem('gemini_api_key'); }
+      finally { setIsUploading(false); }
     };
   };
 
@@ -1428,21 +1238,21 @@ function App() {
     setSelectedSong(s => ({ ...s, chordText: newText }));
   };
 
-  // Personal notes (เก็บใน localStorage แยกตาม user + song)
-  const personalNotesKey = user && selectedSong ? `pnotes_${user.uid}_${selectedSong.id}` : null;
-  useEffect(() => {
-    if (!personalNotesKey) { setPersonalNotesText(''); return; }
-    try { setPersonalNotesText(localStorage.getItem(personalNotesKey) || ''); } catch { setPersonalNotesText(''); }
-  }, [personalNotesKey]);
+  // Personal notes (stored locally per user per song)
+  const personalNotesKey = user ? `pnotes_${user.uid}_${selectedSong?.id}` : null;
+  const getPersonalNotes = () => { if (!personalNotesKey) return ''; try { return localStorage.getItem(personalNotesKey) || ''; } catch { return ''; } };
+  const [showPersonalNotes, setShowPersonalNotes] = useState(false);
+  const [personalNotesText, setPersonalNotesText] = useState('');
+  useEffect(() => { if (selectedSong && user) setPersonalNotesText(getPersonalNotes()); }, [selectedSong?.id, user?.uid]);
 
   const renderTextWithChords = (text) => {
     if (!text) return null;
+    const chordRegex = /([^a-zA-Z0-9]|^)([CDEFGAB][#b]?(?:m|maj|min|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?)(?=[^a-zA-Z0-9]|$)/g;
     return (
       <div className="w-full rounded-xl p-4 md:p-6 leading-relaxed tracking-wide font-medium border border-gray-800"
         style={{ fontSize: `${zoomLevel}%`, background: theme.bg, color: theme.textColor }}>
         {text.split('\n').map((line, i) => {
-          const parts = []; let lastIndex = 0; let match;
-          const regex = new RegExp(CHORD_REGEX_SRC.source, 'g');
+          const parts = []; let lastIndex = 0; let match; const regex = new RegExp(chordRegex);
           while ((match = regex.exec(line)) !== null) {
             const before = line.substring(lastIndex, match.index + match[1].length);
             if (before) parts.push(before);
@@ -1469,7 +1279,7 @@ function App() {
   // Rehearsal Mode (full screen)
   // ==========================================
   if (showRehearsalMode && selectedSong) {
-    return <RehearsalModal song={selectedSong} theme={theme} onClose={() => { setShowRehearsalMode(false); }} />;
+    return <RehearsalModal song={selectedSong} theme={theme} onClose={() => { setShowRehearsalMode(false); }}/>;
   }
 
   // ==========================================
@@ -1477,14 +1287,7 @@ function App() {
   // ==========================================
   if (selectedSong) {
     return (
-      <div className="h-screen text-white p-2 md:p-4 flex flex-col relative overflow-hidden" 
-        style={{ 
-          backgroundColor: theme.bg,
-          backgroundImage: theme.bgImage ? `linear-gradient(${theme.bg}D9, ${theme.bg}D9), url("${theme.bgImage}")` : 'none',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundAttachment: 'fixed'
-        }}>
+      <div className="h-screen text-white p-2 md:p-4 flex flex-col relative overflow-hidden" style={{ background: theme.bg }}>
         {/* Top Bar */}
         <div className="flex justify-between items-center mb-2 z-20 relative flex-shrink-0">
           <button onClick={() => handleSelectSong(null)} className="flex items-center gap-1 text-gray-400 hover:text-white px-2 py-1">
@@ -1528,7 +1331,23 @@ function App() {
         {/* Song Info */}
         <div className="flex justify-between items-end mb-3 pb-3 border-b border-gray-800 flex-wrap gap-3 z-20 relative flex-shrink-0">
           <div className="flex-1 min-w-0">
-            <h2 className="text-2xl md:text-3xl font-bold tracking-wide truncate" style={{ color: theme.chordColor }}>{selectedSong.title}</h2>
+            {/* ชื่อเพลงปัจจุบัน + เพลงถัดไป */}
+            {(() => {
+              const currentIndex = filteredSongs.findIndex(s => s.id === selectedSong.id);
+              const nextSong = currentIndex >= 0 && currentIndex < filteredSongs.length - 1 ? filteredSongs[currentIndex + 1] : null;
+              return (
+                <div className="flex flex-col md:flex-row md:items-baseline md:gap-4 mb-1">
+                  <h2 className="text-2xl md:text-3xl font-bold tracking-wide truncate" style={{ color: theme.chordColor }}>{selectedSong.title}</h2>
+                  {nextSong && (
+                    <div className="flex items-center gap-2 mt-0.5 md:mt-0">
+                      <span className="text-gray-600 text-[10px] uppercase tracking-wider font-semibold">Next:</span>
+                      <span className="text-gray-500 font-medium text-sm truncate max-w-40">{nextSong.title}</span>
+                      {nextSong.key && <span className="text-[10px] bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded font-mono flex-shrink-0">{nextSong.key}</span>}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div className="flex flex-wrap items-center gap-3 mt-1">
               <p className="text-xs md:text-sm text-gray-400">
                 Key: <span className="text-white font-bold">{selectedSong.key}</span>
@@ -1587,7 +1406,7 @@ function App() {
           </div>
         )}
 
-        {/* Personal Notes */}
+        {/* Personal Notes (only visible to logged-in user) */}
         {showPersonalNotes && user && (
           <div className="mb-2 px-3 py-2 bg-yellow-900/30 border border-yellow-700/50 rounded-xl z-20 flex-shrink-0">
             <div className="flex items-center gap-2 mb-1">
@@ -1689,15 +1508,9 @@ function App() {
   // Setlist Screen
   // ==========================================
   return (
-    <div className="h-screen bg-gray-900 text-white flex overflow-hidden relative">
-      
-      {/* ฉากหลังสีดำตอนสไลด์เมนูออกมา (เฉพาะบนมือถือ) */}
-      {isSidebarOpen && (
-        <div className="fixed inset-0 bg-black/60 z-30 md:hidden" onClick={() => setIsSidebarOpen(false)} />
-      )}
-
-      {/* Sidebar (เมนูซ้ายมือ) */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-60 bg-gray-950 border-r border-gray-800 flex flex-col h-full transition-transform duration-300 ease-in-out md:relative md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+    <div className="min-h-screen bg-gray-900 text-white flex">
+      {/* Sidebar */}
+      <aside className="w-60 flex-shrink-0 bg-gray-950 border-r border-gray-800 flex flex-col min-h-screen">
         <div className="p-4 border-b border-gray-800">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -1728,8 +1541,7 @@ function App() {
             const isActive = activePlaylistId === pl.id;
             return (
               <div key={pl.id}
-                // เมื่อกดเลือก Playlist บนมือถือ ให้ลิ้นชักหุบเก็บอัตโนมัติ
-                onClick={() => { setActivePlaylistId(pl.id); setIsSidebarOpen(false); }}
+                onClick={() => setActivePlaylistId(pl.id)}
                 className={`group flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition ${isActive ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'}`}
                 style={isActive ? { borderLeft: `3px solid ${pl.color}` } : {}}>
                 <span className="text-lg flex-shrink-0">{pl.icon}</span>
@@ -1739,8 +1551,9 @@ function App() {
                 </div>
                 {isActive && (
                   <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
-                    <button onClick={e => { e.stopPropagation(); setEditingPlaylist(pl); setShowPlaylistForm(true); }} className="p-1 hover:text-yellow-400"><Edit2 size={11} /></button>
-                    <button onClick={e => { e.stopPropagation(); handleDeletePlaylist(pl.id); }} className="p-1 hover:text-red-400"><Trash2 size={11} /></button>
+                    <button onClick={e => { e.stopPropagation(); setEditingPlaylist(pl); setShowPlaylistForm(true); }} className="p-1 hover:text-yellow-400" title="แก้ไข"><Edit2 size={11} /></button>
+                    <button onClick={e => { e.stopPropagation(); handleDuplicatePlaylist(pl); }} className="p-1 hover:text-green-400" title="ทำสำเนา"><Copy size={11} /></button>
+                    <button onClick={e => { e.stopPropagation(); handleDeletePlaylist(pl.id); }} className="p-1 hover:text-red-400" title="ลบ"><Trash2 size={11} /></button>
                   </div>
                 )}
               </div>
@@ -1748,7 +1561,7 @@ function App() {
           })}
         </nav>
 
-        <div className="p-3 border-t border-gray-800 space-y-1 flex-shrink-0">
+        <div className="p-3 border-t border-gray-800 space-y-1">
           <button onClick={() => setShowImport(true)} className="w-full flex items-center gap-2 px-3 py-2 text-gray-400 hover:bg-gray-800 hover:text-green-400 rounded-lg text-sm transition">
             <ArrowUpFromLine size={14} /> Import Excel/CSV
           </button>
@@ -1761,20 +1574,8 @@ function App() {
         </div>
       </aside>
 
-      {/* Main (พื้นที่แสดงรายชื่อเพลง) */}
-      <main className="flex-1 min-w-0 h-full overflow-y-auto p-4 md:p-8">
-        
-        {/* แถบเมนูด้านบนที่มีปุ่ม Hamburger (เห็นเฉพาะบนจอมือถือ) */}
-        <div className="md:hidden flex items-center gap-3 mb-4 pb-3 border-b border-gray-800">
-          <button onClick={() => setIsSidebarOpen(true)} className="p-1 text-gray-400 hover:text-white">
-            <Menu size={26} />
-          </button>
-          <div className="flex items-center gap-2">
-            <Music size={18} className="text-blue-400" />
-            <span className="font-bold text-white text-base">BandSetlist</span>
-          </div>
-        </div>
-
+      {/* Main */}
+      <main className="flex-1 min-w-0 p-5 md:p-8">
         {!activePlaylistId ? (
           <div className="flex flex-col items-center justify-center h-full text-gray-600 gap-4 py-20">
             <Folder size={64} className="opacity-30" />
@@ -1813,7 +1614,7 @@ function App() {
             {allTags.length > 0 && (
               <div className="flex gap-2 flex-wrap mb-4">
                 <button onClick={() => setFilterTag('')} className={`text-xs px-3 py-1 rounded-full border transition ${!filterTag ? 'bg-blue-700 border-blue-600 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'}`}>ทั้งหมด</button>
-                {allTags.map(t => { const c = getTagColor(t); return <button key={t} onClick={() => setFilterTag(filterTag === t ? '' : t)} className={`text-xs px-3 py-1 rounded-full border transition ${filterTag === t ? `${c.bg} ${c.border}${c.text}` : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'}`}>#{t}</button>; })}
+                {allTags.map(t => { const c = getTagColor(t); return <button key={t} onClick={() => setFilterTag(filterTag === t ? '' : t)} className={`text-xs px-3 py-1 rounded-full border transition ${filterTag === t ? `${c.bg} ${c.border} ${c.text}` : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'}`}>#{t}</button>; })}
               </div>
             )}
 
@@ -1832,7 +1633,7 @@ function App() {
               <DragDropContext onDragEnd={handleOnDragEnd}>
                 <Droppable droppableId="setlist">
                   {(provided) => (
-                    <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-2 pb-20">
+                    <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-2">
                       {filteredSongs.map((song, index) => (
                         <Draggable draggableId={song.id} index={index} key={song.id}>
                           {(provided, snapshot) => (
@@ -1859,6 +1660,7 @@ function App() {
                                 )}
                               </div>
                               <span className="bg-blue-900/50 text-blue-300 text-xs px-2 py-1 rounded-md font-mono border border-blue-800/50 flex-shrink-0">{song.key}</span>
+                              <button onClick={e => { e.stopPropagation(); setSongToCopy(song); }} className="p-1.5 text-gray-500 hover:text-green-400 hover:bg-gray-700 rounded-lg transition flex-shrink-0" title="ส่งไป Playlist อื่น"><Copy size={14} /></button>
                               <button onClick={() => setEditingSong(song)} className="p-1.5 text-gray-500 hover:text-yellow-400 hover:bg-gray-700 rounded-lg transition flex-shrink-0"><Edit2 size={14} /></button>
                               <button onClick={() => handleDeleteSong(song.id)} className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-gray-700 rounded-lg transition flex-shrink-0"><Trash2 size={14} /></button>
                             </div>
@@ -1875,7 +1677,7 @@ function App() {
         )}
       </main>
 
-      {/* Modals ที่รอการเปิดใช้งาน */}
+      {/* Modals */}
       {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
       {showPlaylistForm && <PlaylistFormModal playlist={editingPlaylist} onClose={() => { setShowPlaylistForm(false); setEditingPlaylist(null); }} onSave={data => editingPlaylist ? handleUpdatePlaylist(editingPlaylist.id, data) : handleCreatePlaylist(data)} />}
       {showAddSong && <AddSongModal onClose={() => setShowAddSong(false)} onSave={handleAddSong} allSongs={songs} />}
@@ -1893,6 +1695,32 @@ function App() {
               <button onClick={() => setShowImport(false)} className="flex-1 py-2 bg-gray-700 rounded-xl text-sm">ปิด</button>
               <button onClick={() => { setShowImport(false); setShowPlaylistForm(true); }} className="flex-1 py-2 bg-blue-600 rounded-xl text-sm font-semibold">สร้าง Playlist</button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Modal: ส่งเพลงไป Playlist อื่น */}
+      {songToCopy && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && setSongToCopy(null)}>
+          <div className="bg-gray-800 p-6 rounded-2xl w-full max-w-sm border border-gray-700 shadow-2xl">
+            <h3 className="text-lg font-bold mb-1 flex items-center gap-2"><Copy size={16} className="text-green-400" /> ส่งเพลงไป Playlist อื่น</h3>
+            <p className="mb-4 text-sm text-blue-400 truncate">"{songToCopy.title}"</p>
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              {playlists.filter(p => p.id !== activePlaylistId).length === 0 ? (
+                <p className="text-gray-500 text-sm text-center py-4">ไม่มี Playlist อื่นให้เลือก<br /><span className="text-xs text-gray-600">สร้าง Playlist ใหม่ก่อน</span></p>
+              ) : (
+                playlists.filter(p => p.id !== activePlaylistId).map(pl => (
+                  <button key={pl.id} onClick={() => handleCopySongToPlaylist(songToCopy, pl.id)}
+                    className="w-full text-left px-4 py-3 bg-gray-700 hover:bg-gray-600 rounded-xl text-sm font-medium transition flex items-center gap-3">
+                    <span className="text-lg">{pl.icon}</span>
+                    <div>
+                      <p className="font-semibold">{pl.name}</p>
+                      {pl.description && <p className="text-xs text-gray-400">{pl.description}</p>}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+            <button onClick={() => setSongToCopy(null)} className="w-full mt-4 py-2.5 bg-gray-700 text-gray-300 hover:bg-gray-600 rounded-xl font-semibold transition">ยกเลิก</button>
           </div>
         </div>
       )}
