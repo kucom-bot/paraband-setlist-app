@@ -1332,7 +1332,7 @@ function App() {
       const base64Data = reader.result.split(',')[1];
       const apiKey = pickGeminiKey();
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-3.6-flash:generateContent?key=${apiKey}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents: [{ parts: [{ text: "Extract the lyrics and chords from this image. Output ONLY the raw text. Do NOT use markdown code blocks. Preserve the exact placement of chords relative to the lyrics." }, { inline_data: { mime_type: file.type, data: base64Data } }] }] })
         });
