@@ -1324,44 +1324,42 @@ function App() {
 
   const processImageWithAI = async (file) => {
     if (!file || !selectedSong) return;
-    if (!ensureGeminiKeys()) return;
+    
     setIsUploading(true);
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = async () => {
       const base64Data = reader.result.split(',')[1];
-      const apiKey = pickGeminiKey();
+      const mimeType = file.type; // <-- เพิ่มบรรทัดนี้เพื่อดึงประเภทไฟล์ (เช่น image/jpeg)
+      
       try {
-            // วิ่งไปหา Vercel Function (ที่จัดการสุ่มหลาย Key ไว้หลังบ้าน)
+        // วิ่งไปหา Vercel Function ของเรา
         const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64Data, mimeType })
-          });
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base64Data, mimeType })
+        });
+        
         const data = await res.json();
-        if (data.error) throw new Error(data.error.message);
-        let text = data.candidates[0].content.parts[0].text.replace(/```/g, '').trim();
+        
+        // ถ้า API ส่ง Error กลับมา ให้โยนเข้า catch
+        if (!data.success) throw new Error(data.message || "Failed to process image");
+        
+        let text = data.text.replace(/```/g, '').trim();
         const detectedKey = detectKey(text);
-        setTempText(text); setIsEditingText(true);
+        
+        setTempText(text); 
+        setIsEditingText(true);
+        
         if (detectedKey && detectedKey !== selectedSong.key && window.confirm(`AI เจอคีย์ "${detectedKey}" อัปเดตไหม?`)) {
           await updateDoc(doc(db, 'songs', selectedSong.id), { key: detectedKey });
           setSelectedSong(s => ({ ...s, key: detectedKey }));
         }
-      } catch (e) {
-        // ถ้า key นี้ใช้ไม่ได้ (429 rate limit) บอก user
-        const msg = e.message || '';
-        if (msg.includes('429') || msg.includes('quota')) {
-          alert(`Key หมด quota ชั่วคราว กำลังลอง key ถัดไปในครั้งหน้า\n(${msg})`);
-        } else {
-          alert("AI Error: " + msg);
-          // ถ้า error อื่น (invalid key) ให้ล้าง keys ทั้งหมด
-          if (msg.includes('API_KEY') || msg.includes('invalid')) {
-            localStorage.removeItem('gemini_api_keys');
-            localStorage.removeItem('gemini_key_idx');
-          }
-        }
+      } catch (e) { 
+        alert("AI Error: " + e.message); 
+      } finally { 
+        setIsUploading(false); 
       }
-      finally { setIsUploading(false); }
     };
   };
 
