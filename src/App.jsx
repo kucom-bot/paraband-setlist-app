@@ -908,10 +908,12 @@ function EditSongModal({ song, onClose, onSave, allSongs }) {
 }
 
 // ---- Settings Modal ----
-function SettingsModal({ theme, onClose, onSave }) {
+function SettingsModal({ theme, onClose, onSave, geminiKeyCount, onManageGeminiKeys }) {
   const [bg, setBg] = useState(theme.bg || '#000000');
   const [textColor, setTextColor] = useState(theme.textColor || '#ffffff');
   const [chordColor, setChordColor] = useState(theme.chordColor || '#facc15');
+  const [bgImage, setBgImage] = useState(theme.bgImage || '');
+  const [bgOpacity, setBgOpacity] = useState(theme.bgOpacity ?? 0.15);
   const [preset, setPreset] = useState('custom');
   const presets = [
     { id: 'dark', label: 'Dark', bg: '#000000', textColor: '#ffffff', chordColor: '#facc15' },
@@ -920,38 +922,110 @@ function SettingsModal({ theme, onClose, onSave }) {
     { id: 'warm', label: 'Warm', bg: '#1c0a00', textColor: '#fef3c7', chordColor: '#fb923c' },
     { id: 'purple', label: 'Purple', bg: '#1e1b4b', textColor: '#e0e7ff', chordColor: '#c084fc' },
   ];
+
+  const handleBgImage = (file) => {
+    if (!file) return;
+    if (file.size > 500 * 1024) { alert('รูปใหญ่เกิน 500KB ครับ'); return; }
+    const reader = new FileReader();
+    reader.onload = e => setBgImage(e.target.result);
+    reader.readAsDataURL(file);
+  };
+
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="bg-gray-800 rounded-2xl w-full max-w-md border border-gray-700 shadow-2xl">
-        <div className="flex justify-between items-center p-5 border-b border-gray-700">
+      <div className="bg-gray-800 rounded-2xl w-full max-w-md border border-gray-700 shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="flex justify-between items-center p-5 border-b border-gray-700 flex-shrink-0">
           <h2 className="text-xl font-bold flex items-center gap-2"><Settings size={18} className="text-gray-300" /> ตั้งค่าธีม Stage</h2>
           <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-white" /></button>
         </div>
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {presets.map(p => (
-              <button key={p.id} onClick={() => { setPreset(p.id); setBg(p.bg); setTextColor(p.textColor); setChordColor(p.chordColor); }}
-                style={{ background: p.bg, borderColor: preset === p.id ? p.chordColor : '#374151' }} className="border-2 rounded-lg p-3 text-left transition">
-                <span style={{ color: p.textColor }} className="text-sm font-semibold">{p.label}</span>
-                <div className="flex gap-1 mt-1"><span style={{ background: p.textColor }} className="w-3 h-3 rounded-full" /><span style={{ background: p.chordColor }} className="w-3 h-3 rounded-full" /></div>
-              </button>
-            ))}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* Presets */}
+          <div>
+            <p className="text-xs text-gray-400 mb-2">Presets</p>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+              {presets.map(p => (
+                <button key={p.id} onClick={() => { setPreset(p.id); setBg(p.bg); setTextColor(p.textColor); setChordColor(p.chordColor); }}
+                  style={{ background: p.bg, borderColor: preset === p.id ? p.chordColor : '#374151' }} className="border-2 rounded-lg p-2 text-left transition">
+                  <span style={{ color: p.textColor }} className="text-xs font-semibold block truncate">{p.label}</span>
+                  <div className="flex gap-1 mt-1"><span style={{ background: p.textColor }} className="w-2.5 h-2.5 rounded-full" /><span style={{ background: p.chordColor }} className="w-2.5 h-2.5 rounded-full" /></div>
+                </button>
+              ))}
+            </div>
           </div>
+
+          {/* Colors */}
           <div className="space-y-3">
+            <p className="text-xs text-gray-400">สีตัวอักษรและคอร์ด</p>
             {[['สีพื้นหลัง', bg, setBg], ['สีตัวอักษร', textColor, setTextColor], ['สีคอร์ด', chordColor, setChordColor]].map(([label, val, setter]) => (
               <div key={label} className="flex items-center justify-between">
                 <label className="text-sm text-gray-300">{label}</label>
-                <div className="flex items-center gap-2"><input type="color" value={val} onChange={e => setter(e.target.value)} className="w-10 h-8 rounded cursor-pointer border-0 bg-transparent" /><span className="text-xs text-gray-400 font-mono">{val}</span></div>
+                <div className="flex items-center gap-2">
+                  <input type="color" value={val} onChange={e => setter(e.target.value)} className="w-10 h-8 rounded cursor-pointer border-0 bg-transparent" />
+                  <span className="text-xs text-gray-400 font-mono">{val}</span>
+                </div>
               </div>
             ))}
           </div>
-          <div className="rounded-xl p-4 border border-gray-600" style={{ background: bg }}>
-            <p style={{ color: textColor }} className="text-sm">ตัวอย่าง <span style={{ color: chordColor, fontWeight: 'bold' }} className="px-1 rounded">Am</span> - <span style={{ color: chordColor, fontWeight: 'bold' }} className="px-1 rounded">G</span></p>
+
+          {/* Background Image */}
+          <div className="space-y-2">
+            <p className="text-xs text-gray-400">รูปพื้นหลัง Stage (ไม่บังคับ)</p>
+            <div className="flex gap-2 items-center">
+              <label className="flex-1 flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg cursor-pointer text-sm transition">
+                <ImageIcon size={14} className="text-gray-400" />
+                {bgImage ? 'เปลี่ยนรูป' : 'เลือกรูปพื้นหลัง'}
+                <input type="file" accept="image/*" className="hidden" onChange={e => handleBgImage(e.target.files[0])} />
+              </label>
+              {bgImage && (
+                <button onClick={() => setBgImage('')} className="px-3 py-2 bg-red-900/40 text-red-400 hover:bg-red-800 rounded-lg text-sm transition">ลบ</button>
+              )}
+            </div>
+            {bgImage && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs text-gray-400">
+                  <span>ความเข้มรูป</span>
+                  <span>{Math.round(bgOpacity * 100)}%</span>
+                </div>
+                <input type="range" min="0.03" max="0.5" step="0.01" value={bgOpacity} onChange={e => setBgOpacity(parseFloat(e.target.value))} className="w-full accent-blue-500" />
+              </div>
+            )}
+          </div>
+
+          {/* Live Preview */}
+          <div>
+            <p className="text-xs text-gray-400 mb-2">Preview</p>
+            <div className="rounded-xl p-4 border border-gray-600 relative overflow-hidden min-h-16" style={{ background: bg }}>
+              {bgImage && (
+                <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${bgImage})`, opacity: bgOpacity }} />
+              )}
+              <div className="relative z-10">
+                <p style={{ color: chordColor }} className="text-lg font-bold">ชื่อเพลง</p>
+                <p style={{ color: textColor }} className="text-sm mt-1">
+                  เนื้อเพลงบรรทัดนี้{' '}
+                  <span style={{ color: chordColor, fontWeight: 'bold', background: chordColor + '22', padding: '0 4px', borderRadius: 4 }}>Am</span>
+                  {' '}ต่อด้วย{' '}
+                  <span style={{ color: chordColor, fontWeight: 'bold', background: chordColor + '22', padding: '0 4px', borderRadius: 4 }}>G</span>
+                </p>
+                <p style={{ color: chordColor, opacity: 0.3 }} className="text-sm mt-1 truncate">Next: เพลงถัดไป</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Gemini Keys Management */}
+          <div className="bg-gray-900 rounded-xl p-3 flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-300 font-semibold">Gemini API Keys</p>
+              <p className="text-xs text-gray-500">{geminiKeyCount} key{geminiKeyCount !== 1 ? 's' : ''} — สุ่มหมุนเวียนอัตโนมัติ</p>
+            </div>
+            <button onClick={onManageGeminiKeys} className="px-3 py-1.5 bg-yellow-700 hover:bg-yellow-600 text-yellow-100 rounded-lg text-xs font-semibold transition">
+              จัดการ Keys
+            </button>
           </div>
         </div>
-        <div className="flex gap-3 p-5 border-t border-gray-700">
+
+        <div className="flex gap-3 p-5 border-t border-gray-700 flex-shrink-0">
           <button onClick={onClose} className="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold">ยกเลิก</button>
-          <button onClick={() => { onSave({ bg, textColor, chordColor }); onClose(); }} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-semibold">บันทึก</button>
+          <button onClick={() => { onSave({ bg, textColor, chordColor, bgImage, bgOpacity }); onClose(); }} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl font-semibold">บันทึก</button>
         </div>
       </div>
     </div>
@@ -995,6 +1069,7 @@ function App() {
 
   // --- Songs ---
   const [songs, setSongs] = useState([]);
+  const [allSongsAcrossPlaylists, setAllSongsAcrossPlaylists] = useState([]); // สำหรับ Panic Jump ข้าม playlist
   const [isLoading, setIsLoading] = useState(true);
   const [selectedSong, setSelectedSong] = useState(null);
 
@@ -1055,6 +1130,15 @@ function App() {
     return () => unsub();
   }, [activePlaylistId, isConductor, isEditingText]);
 
+  // โหลดเพลงทุกเพลงจากทุก Playlist เพื่อใช้ใน Panic Jump
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'songs'), snap => {
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setAllSongsAcrossPlaylists(data);
+    });
+    return () => unsub();
+  }, []);
+
   // Conductor sync
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'settings', 'live_status'), snap => {
@@ -1098,6 +1182,23 @@ function App() {
   }, [isAutoScrolling, scrollSpeed]);
 
   const saveTheme = (t) => { setTheme(t); localStorage.setItem('stage_theme', JSON.stringify(t)); };
+
+  const getGeminiKeyCount = () => { try { return JSON.parse(localStorage.getItem('gemini_api_keys') || '[]').length; } catch { return 0; } };
+  const [geminiKeyCount, setGeminiKeyCount] = useState(getGeminiKeyCount);
+
+  const handleManageGeminiKeys = () => {
+    const current = (() => { try { return JSON.parse(localStorage.getItem('gemini_api_keys') || '[]'); } catch { return []; } })();
+    const input = prompt(
+      `จัดการ Gemini API Keys (${current.length} keys ปัจจุบัน)\n\nใส่ keys ทั้งหมด คั่นด้วย Enter หรือ comma\n(ลบออกทั้งหมดแล้วใส่ใหม่)\n\nKeys ปัจจุบัน:\n${current.map((k, i) => `${i + 1}. ${k.slice(0, 8)}...`).join('\n') || '(ว่าง)'}`,
+      current.join('\n')
+    );
+    if (input === null) return;
+    const parsed = input.split(/[\n,]+/).map(k => k.trim()).filter(Boolean);
+    localStorage.setItem('gemini_api_keys', JSON.stringify(parsed));
+    localStorage.setItem('gemini_key_idx', '0');
+    setGeminiKeyCount(parsed.length);
+    alert(`บันทึก ${parsed.length} key เรียบร้อย`);
+  };
 
   // Playlist handlers
   const handleCreatePlaylist = async (data) => { await addDoc(collection(db, 'playlists'), { ...data, order: playlists.length, createdAt: Date.now() }); };
@@ -1198,15 +1299,38 @@ function App() {
     reader.onerror = () => { alert("อ่านไฟล์ไม่สำเร็จ"); setIsUploading(false); };
   };
 
+  // --- Gemini multi-key rotation ---
+  const getGeminiKeys = () => {
+    try { return JSON.parse(localStorage.getItem('gemini_api_keys') || '[]'); } catch { return []; }
+  };
+  const saveGeminiKeys = (keys) => localStorage.setItem('gemini_api_keys', JSON.stringify(keys));
+  const pickGeminiKey = () => {
+    const keys = getGeminiKeys();
+    if (keys.length === 0) return null;
+    // rotate: เก็บ index ปัจจุบันไว้
+    const idx = (parseInt(localStorage.getItem('gemini_key_idx') || '0')) % keys.length;
+    localStorage.setItem('gemini_key_idx', (idx + 1) % keys.length);
+    return keys[idx];
+  };
+  const ensureGeminiKeys = () => {
+    let keys = getGeminiKeys();
+    if (keys.length > 0) return true;
+    const input = prompt("🔑 ใส่ Gemini API Key (รับฟรีที่ aistudio.google.com)\nใส่ได้หลาย key คั่นด้วย Enter หรือ comma เพื่อสุ่มหมุนเวียน:");
+    if (!input) return false;
+    const parsed = input.split(/[\n,]+/).map(k => k.trim()).filter(Boolean);
+    saveGeminiKeys(parsed);
+    return parsed.length > 0;
+  };
+
   const processImageWithAI = async (file) => {
     if (!file || !selectedSong) return;
-    let apiKey = localStorage.getItem('gemini_api_key');
-    if (!apiKey) { apiKey = prompt("🔑 Gemini API Key (รับฟรีที่ aistudio.google.com):"); if (!apiKey) return; localStorage.setItem('gemini_api_key', apiKey); }
+    if (!ensureGeminiKeys()) return;
     setIsUploading(true);
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = async () => {
       const base64Data = reader.result.split(',')[1];
+      const apiKey = pickGeminiKey();
       try {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1221,7 +1345,20 @@ function App() {
           await updateDoc(doc(db, 'songs', selectedSong.id), { key: detectedKey });
           setSelectedSong(s => ({ ...s, key: detectedKey }));
         }
-      } catch (e) { alert("AI Error: " + e.message); localStorage.removeItem('gemini_api_key'); }
+      } catch (e) {
+        // ถ้า key นี้ใช้ไม่ได้ (429 rate limit) บอก user
+        const msg = e.message || '';
+        if (msg.includes('429') || msg.includes('quota')) {
+          alert(`Key หมด quota ชั่วคราว กำลังลอง key ถัดไปในครั้งหน้า\n(${msg})`);
+        } else {
+          alert("AI Error: " + msg);
+          // ถ้า error อื่น (invalid key) ให้ล้าง keys ทั้งหมด
+          if (msg.includes('API_KEY') || msg.includes('invalid')) {
+            localStorage.removeItem('gemini_api_keys');
+            localStorage.removeItem('gemini_key_idx');
+          }
+        }
+      }
       finally { setIsUploading(false); }
     };
   };
@@ -1303,6 +1440,10 @@ function App() {
   if (selectedSong) {
     return (
       <div className="h-screen text-white p-2 md:p-4 flex flex-col relative overflow-hidden" style={{ background: theme.bg }}>
+        {/* Background image layer */}
+        {theme.bgImage && (
+          <div className="absolute inset-0 bg-cover bg-center pointer-events-none" style={{ backgroundImage: `url(${theme.bgImage})`, opacity: theme.bgOpacity ?? 0.15 }} />
+        )}
         {/* Top Bar */}
         <div className="flex justify-between items-center mb-2 z-20 relative flex-shrink-0">
           <button onClick={() => handleSelectSong(null)} className="flex items-center gap-1 text-gray-400 hover:text-white px-2 py-1">
@@ -1450,23 +1591,55 @@ function App() {
           </div>
         )}
 
-        {/* Panic Jump */}
+        {/* Panic Jump — ค้นหาข้าม Playlist */}
         {showPanicJump && (
           <div className="absolute inset-0 bg-black/95 z-50 flex flex-col p-4 md:p-10">
             <div className="max-w-2xl w-full mx-auto flex flex-col h-full">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold text-yellow-400 flex items-center gap-2"><Zap size={22} /> ค้นหาเพลงด่วน</h3>
+                <h3 className="text-xl font-bold text-yellow-400 flex items-center gap-2"><Zap size={22} /> ค้นหาเพลงด่วน <span className="text-xs text-gray-500 font-normal">(ทุก Playlist)</span></h3>
                 <button onClick={() => setShowPanicJump(false)}><X size={20} className="text-gray-400 hover:text-white" /></button>
               </div>
-              <input type="text" placeholder="พิมพ์ชื่อเพลง..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} autoFocus
+              <input type="text" placeholder="พิมพ์ชื่อเพลง หรือชื่อศิลปิน..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} autoFocus
                 className="w-full bg-gray-800 text-white text-xl p-4 rounded-xl border-2 border-gray-700 focus:border-yellow-400 outline-none mb-3" />
               <div className="flex-1 overflow-auto space-y-2">
-                {songs.filter(s => s.title.toLowerCase().includes(searchQuery.toLowerCase())).map(song => (
-                  <div key={song.id} onClick={() => { handleSelectSong(song); setShowPanicJump(false); }} className="p-4 bg-gray-900 rounded-xl border border-gray-700 hover:border-yellow-400 cursor-pointer flex justify-between items-center group">
-                    <div><span className="text-base font-bold group-hover:text-yellow-400">{song.title}</span><p className="text-gray-500 text-xs">{song.artist}</p></div>
-                    <span className="text-gray-400 text-sm font-mono">Key {song.key}</span>
-                  </div>
-                ))}
+                {(() => {
+                  const q = searchQuery.toLowerCase();
+                  const results = q.length < 1 ? songs : allSongsAcrossPlaylists.filter(s =>
+                    s.title?.toLowerCase().includes(q) || s.artist?.toLowerCase().includes(q)
+                  ).sort((a, b) => {
+                    // เพลงใน playlist ปัจจุบันขึ้นก่อน
+                    const aInCurrent = a.playlistId === activePlaylistId ? 0 : 1;
+                    const bInCurrent = b.playlistId === activePlaylistId ? 0 : 1;
+                    return aInCurrent - bInCurrent || a.title?.localeCompare(b.title);
+                  });
+                  if (results.length === 0) return <p className="text-gray-600 text-center py-10">ไม่พบเพลง "{searchQuery}"</p>;
+                  return results.map(song => {
+                    const pl = playlists.find(p => p.id === song.playlistId);
+                    const isOtherPlaylist = song.playlistId !== activePlaylistId;
+                    return (
+                      <div key={song.id}
+                        onClick={() => {
+                          if (isOtherPlaylist) setActivePlaylistId(song.playlistId);
+                          handleSelectSong(song);
+                          setShowPanicJump(false);
+                        }}
+                        className={`p-4 rounded-xl border cursor-pointer flex justify-between items-center group transition ${isOtherPlaylist ? 'bg-gray-900/80 border-gray-700 hover:border-orange-400' : 'bg-gray-900 border-gray-700 hover:border-yellow-400'}`}>
+                        <div className="min-w-0">
+                          <span className={`text-base font-bold group-hover:text-yellow-400 ${isOtherPlaylist ? 'text-gray-300' : 'text-white'}`}>{song.title}</span>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-gray-500 text-xs truncate">{song.artist}</p>
+                            {pl && isOtherPlaylist && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full border flex-shrink-0" style={{ color: pl.color, borderColor: pl.color + '66', background: pl.color + '22' }}>
+                                {pl.icon} {pl.name}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span className="text-gray-400 text-sm font-mono flex-shrink-0 ml-3">Key {song.key}</span>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             </div>
           </div>
@@ -1529,7 +1702,7 @@ function App() {
           )}
         </div>
 
-        {showSettings && <SettingsModal theme={theme} onClose={() => setShowSettings(false)} onSave={saveTheme} />}
+        {showSettings && <SettingsModal theme={theme} onClose={() => setShowSettings(false)} onSave={saveTheme} geminiKeyCount={geminiKeyCount} onManageGeminiKeys={handleManageGeminiKeys} />}
       </div>
     );
   }
@@ -1731,7 +1904,7 @@ function App() {
       {showPlaylistForm && <PlaylistFormModal playlist={editingPlaylist} onClose={() => { setShowPlaylistForm(false); setEditingPlaylist(null); }} onSave={data => editingPlaylist ? handleUpdatePlaylist(editingPlaylist.id, data) : handleCreatePlaylist(data)} />}
       {showAddSong && <AddSongModal onClose={() => setShowAddSong(false)} onSave={handleAddSong} allSongs={songs} />}
       {editingSong && <EditSongModal song={editingSong} allSongs={songs} onClose={() => setEditingSong(null)} onSave={data => { handleUpdateSong(editingSong.id, data); setEditingSong(null); }} />}
-      {showSettings && <SettingsModal theme={theme} onClose={() => setShowSettings(false)} onSave={saveTheme} />}
+      {showSettings && <SettingsModal theme={theme} onClose={() => setShowSettings(false)} onSave={saveTheme} geminiKeyCount={geminiKeyCount} onManageGeminiKeys={handleManageGeminiKeys} />}
       {showPDFExport && <PDFExportModal songs={filteredSongs.length > 0 ? filteredSongs : songs} playlist={activePlaylist} onClose={() => setShowPDFExport(false)} />}
       {showImport && playlists.length > 0 && <ImportModal playlists={playlists} onClose={() => setShowImport(false)} onImport={() => setTimeout(() => setShowImport(false), 2000)} />}
 
